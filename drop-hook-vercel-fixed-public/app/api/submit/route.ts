@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import nodemailer from 'nodemailer';
 
 export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic'; // на всякий случай
+export const dynamic = 'force-dynamic';
 
 function envOrThrow(name: string): string {
   const v = process.env[name];
@@ -12,37 +12,35 @@ function envOrThrow(name: string): string {
 
 export async function POST(req: Request) {
   try {
-    // забираем multipart/form-data
     const form = await req.formData();
 
     const event_type   = String(form.get('event_type') || '');
     const truck_number = String(form.get('truck_number') || '');
     const driver_first = String(form.get('driver_first') || '');
     const driver_last  = String(form.get('driver_last')  || '');
-    const trailer_pick = String(form.get('trailer_pick') || '');
-    const trailer_drop = String(form.get('trailer_drop') || '');
+    const trailer_pick = String(form.get('trailer_pick') || 'нет');
+    const trailer_drop = String(form.get('trailer_drop') || 'нет');
     const notes        = String(form.get('notes') || '');
 
     if (!event_type || !truck_number || !driver_first || !driver_last) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // читаем 10 файлов из form-data: photo1..photo10
-    const attachments: { filename: string, content: Buffer, contentType?: string }[] = [];
-    for (let i = 1; i <= 10; i++) {
-      const f = form.get(`photo${i}`) as unknown as File | null;
-      if (!f) return NextResponse.json({ error: `photo${i} is required` }, { status: 400 });
-      const ab = await f.arrayBuffer();
-      attachments.push({
-        filename: f.name || `photo_${i}.jpg`,
-        content: Buffer.from(ab),
-        contentType: f.type || undefined,
-      });
+    // все файлы под ключом "photos"
+    const files = form.getAll('photos') as unknown as File[];
+    if (files.length !== 10) {
+      return NextResponse.json({ error: `Ожидалось 10 фото, получено: ${files.length}` }, { status: 400 });
     }
+
+    const attachments = await Promise.all(files.map(async (f, i) => ({
+      filename: f?.name || `photo_${i+1}.jpg`,
+      content: Buffer.from(await f.arrayBuffer()),
+      contentType: f?.type || undefined,
+    })));
 
     const when = new Date().toISOString().replace('T',' ').replace('Z',' UTC');
     const fullName = `${driver_first} ${driver_last}`.trim();
-    const subject = `${event_type} — Truck ${truck_number} — ${fullName}`;
+    const subject = `US Team Fleet — ${event_type} — Truck ${truck_number} — ${fullName}`;
 
     const bodyText = [
       `Event: ${event_type}`,
@@ -55,15 +53,11 @@ export async function POST(req: Request) {
       `Photos: (10 attachments)`,
     ].join('\n');
 
-    // SMTP
     const transporter = nodemailer.createTransport({
       host: envOrThrow('SMTP_HOST'),
       port: Number(envOrThrow('SMTP_PORT')),
       secure: String(process.env.USE_SSL||'false').toLowerCase()==='true',
-      auth: {
-        user: envOrThrow('SMTP_USER'),
-        pass: envOrThrow('SMTP_PASS'),
-      },
+      auth: { user: envOrThrow('SMTP_USER'), pass: envOrThrow('SMTP_PASS') },
     });
 
     await transporter.sendMail({
