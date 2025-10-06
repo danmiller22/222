@@ -1,14 +1,18 @@
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 import { NextResponse } from 'next/server';
 
-export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await request.json()) as HandleUploadBody;
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic'; // не кэшируем
 
+export async function POST(request: Request) {
   try {
+    const body = (await request.json()) as HandleUploadBody;
+
     const json = await handleUpload({
       body,
       request,
       onBeforeGenerateToken: async (pathname /*, clientPayload*/) => {
+        // Можно добавить ACL/проверки. Пока разрешаем изображения.
         return {
           allowedContentTypes: [
             'image/jpeg',
@@ -18,16 +22,26 @@ export async function POST(request: Request): Promise<NextResponse> {
             'image/heif',
           ],
           addRandomSuffix: true,
-          tokenPayload: JSON.stringify({}), // вернётся в onUploadCompleted (если нужно)
+          tokenPayload: JSON.stringify({ p: pathname }), // вернётся в onUploadCompleted
         };
       },
-      onUploadCompleted: async ({ blob /*, tokenPayload*/ }) => {
-        console.log('blob upload completed:', blob.url);
+      onUploadCompleted: async ({ blob, tokenPayload }) => {
+        console.log('✅ Blob uploaded:', blob.url, tokenPayload);
       },
     });
 
     return NextResponse.json(json);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 400 });
+    console.error('❌ /api/upload error:', err?.message || err);
+    // Очень важно вернуть читаемое сообщение — клиент покажет его
+    return NextResponse.json(
+      { error: 'upload-token-failed', detail: err?.message || 'unknown' },
+      { status: 400 },
+    );
   }
+}
+
+// На всякий случай — запретим GET
+export async function GET() {
+  return NextResponse.json({ error: 'method-not-allowed' }, { status: 405 });
 }
