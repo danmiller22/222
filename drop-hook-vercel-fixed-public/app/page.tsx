@@ -2,7 +2,6 @@
 
 import Image from 'next/image';
 import { useState } from 'react';
-import { upload } from '@vercel/blob/client';
 
 type SubmitState = { status: 'idle'|'uploading'|'sending'|'done'|'error'; message?: string };
 
@@ -15,52 +14,41 @@ export default function Page() {
     const form = e.currentTarget;
     const fd = new FormData(form);
 
-    // обязательные поля текста
+    // обязательные текстовые поля
     const required = ['event_type','truck_number','driver_first','driver_last'];
     for (const k of required) {
       if (!fd.get(k)) { setState({status:'error', message:`Заполни поле: ${k}`}); return; }
     }
 
-    // обязательные 10 фото
+    // 10 фото обязательны
     const local: File[] = [];
+    let totalBytes = 0;
     for (let i=0;i<10;i++) {
       const f = files[i];
       if (!f) { setState({status:'error', message:`Добавь фото #${i+1}`}); return; }
-      local.push(f);
+      local.push(f); totalBytes += f.size;
+    }
+    // необязательный предохранитель (25 МБ — лимит большинства почтовиков)
+    if (totalBytes > 24 * 1024 * 1024) {
+      setState({status:'error', message:'Суммарный размер фото >24MB. Снимай меньшим размером.'});
+      return;
     }
 
     try {
-      setState({status:'uploading', message:'Загрузка фото…'});
-      const urls: string[] = [];
-      for (let i=0;i<10;i++) {
-        const f = local[i]!;
-        const res = await upload(
-          `drops/${Date.now()}_${i+1}_${f.name}`,
-          f,
-          {
-            access: 'public',
-            handleUploadUrl: '/api/upload',
-          }
-        );
-        urls.push(res.url);
-      }
-
       setState({status:'sending', message:'Отправка письма…'});
-      const payload = {
-        event_type: String(fd.get('event_type')),
-        truck_number: String(fd.get('truck_number')),
-        driver_first: String(fd.get('driver_first')),
-        driver_last: String(fd.get('driver_last')),
-        trailer_pick: String(fd.get('trailer_pick')||''),
-        trailer_drop: String(fd.get('trailer_drop')||''),
-        notes: String(fd.get('notes')||''),
-        photo_urls: urls,
-      };
-      const resp = await fetch('/api/submit', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+
+      // отправляем МУЛЬТИПАРТ с файлами прямо на /api/submit
+      const payload = new FormData();
+      payload.set('event_type', String(fd.get('event_type')));
+      payload.set('truck_number', String(fd.get('truck_number')));
+      payload.set('driver_first', String(fd.get('driver_first')));
+      payload.set('driver_last', String(fd.get('driver_last')));
+      payload.set('trailer_pick', String(fd.get('trailer_pick')||''));
+      payload.set('trailer_drop', String(fd.get('trailer_drop')||''));
+      payload.set('notes', String(fd.get('notes')||''));
+      local.forEach((f, i) => payload.append(`photo${i+1}`, f, f.name || `photo_${i+1}.jpg`));
+
+      const resp = await fetch('/api/submit', { method: 'POST', body: payload });
       if (!resp.ok) throw new Error(await resp.text());
       setState({status:'done', message:'Готово — письмо отправлено.'});
       form.reset(); setFiles(Array(10).fill(null));
@@ -145,8 +133,8 @@ export default function Page() {
             </div>
           </div>
 
-          <button className="btn-primary btn-full" type="submit" disabled={state.status==='uploading'||state.status==='sending'}>
-            {state.status==='uploading'?'Загрузка…': state.status==='sending'?'Отправка…':'Отправить'}
+          <button className="btn-primary btn-full" type="submit" disabled={state.status==='sending'}>
+            {state.status==='sending' ? 'Отправка…' : 'Отправить'}
           </button>
         </form>
 
