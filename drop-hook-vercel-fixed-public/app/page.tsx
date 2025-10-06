@@ -85,7 +85,7 @@ export default function Page() {
     <div className="container">
       <div className="card">
         <div className="logo">
-          <Image src="/logo.svg" alt="Logo" width={36} height={36}/>
+        <Image src="/logo.png" alt="USTEAM" width={40} height={40} priority />
           <div className="brand">USTEAM — Drop / Hook</div>
         </div>
         <h1 style={{color:'var(--accent)'}}>Drop / Hook</h1>
