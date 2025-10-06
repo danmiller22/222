@@ -1,39 +1,65 @@
-
 :root{
   --bg:#0a0a0a;
   --panel:#111;
-  --ink:#e6e6e6;
-  --muted:#9b9b9b;
-  --accent:#ff2d2d;
-  --radius:20px;
+  --ink:#f1f1f1;
+  --muted:#b6b6b6;
+  --accent:#ff2d2d; /* красный */
+  --radius:18px;
 }
 *{box-sizing:border-box}
 html,body{padding:0;margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
 a{color:inherit;text-decoration:none}
-.container{min-height:100vh;display:grid;place-items:center;padding:24px}
-.card{width:100%;max-width:760px;background:var(--panel);border-radius:var(--radius);box-shadow:0 10px 30px rgba(0,0,0,.35);padding:28px 22px}
-h1{margin:0 0 16px;font-size:28px;letter-spacing:-.02em}
-.lead{margin:0 0 16px;color:#cfcfcf}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-label{display:block;font-size:14px;color:#bdbdbd;margin-bottom:6px}
-input[type=text], textarea, select{width:100%;padding:14px 12px;border:1px solid #242424;border-radius:12px;background:#0f0f0f;outline:none;font-size:16px;color:var(--ink)}
-input:focus,textarea:focus,select:focus{border-color:var(--accent)}
-textarea{min-height:96px;resize:vertical}
-.photos{padding:12px;border:1px dashed #2a2a2a;border-radius:14px;background:#0d0d0d}
-.hint{font-size:12px;color:#a9a9a9}
-.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:10px}
-button{appearance:none;border:0;padding:14px 18px;border-radius:14px;font-weight:700;cursor:pointer}
-.btn-primary{background:var(--accent);color:white}
-.btn-secondary{background:#2a2a2a;color:#ddd}
-.footer{margin-top:18px;text-align:center;color:#bdbdbd;font-size:12px}
-.logo{display:flex;align-items:center;gap:12px;margin-bottom:10px}
-..logo img{
-  display:block;   /* чтобы не «провисал» по базовой линии */
-  height:40px;
-  width:40px;
-  object-fit:contain;
-}
+
+.container{min-height:100vh;display:grid;place-items:center;padding:16px}
+.card{width:100%;max-width:520px;background:var(--panel);border-radius:var(--radius);box-shadow:0 10px 30px rgba(0,0,0,.35);padding:18px}
+
+.logo{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.logo img{display:block;height:40px;width:40px;object-fit:contain}
 .brand{font-weight:800;letter-spacing:.02em}
-.success{color:#9be07b}
-.error{color:#ff6b6b}
-.file-row{display:flex;flex-direction:column;gap:6px}
+
+.title{margin:4px 0 6px;font-size:26px;letter-spacing:-.02em;color:var(--accent)}
+.lead{margin:0 0 14px;color:var(--ink);line-height:1.4}
+
+.form-grid{display:grid;grid-template-columns:1fr;gap:12px}
+.field label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+input[type=text], textarea, select{
+  width:100%;padding:15px 14px;border:1px solid #242424;border-radius:14px;background:#0e0e0e;outline:none;font-size:16px;color:var(--ink);
+}
+input:focus,textarea:focus,select:focus{border-color:var(--accent)}
+textarea{min-height:88px;resize:vertical}
+.field--full{grid-column:1 / -1}
+
+.photos{margin-top:10px}
+.photos-note{font-size:14px;margin-bottom:10px;color:var(--muted)}
+.photos-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:480px){ .photos-grid{grid-template-columns:1fr;} }
+
+.photo-input{
+  position:relative;
+  border:1px dashed #2a2a2a;
+  background:#0d0d0d;
+  border-radius:14px;
+  padding:14px;
+}
+.photo-index{
+  position:absolute;top:8px;left:10px;
+  background:#1a1a1a;color:#ddd;border-radius:999px;
+  font-size:12px;padding:2px 7px
+}
+.photo-input input{
+  width:100%;
+  padding:40px 12px 40px;
+  border:0;border-radius:12px;
+  background:#131313;color:#ddd;
+}
+
+/* кнопка отправки — удобно жать большим пальцем */
+.btn-primary{
+  appearance:none;border:0;padding:16px 18px;border-radius:14px;font-weight:800;cursor:pointer;background:var(--accent);color:#fff;margin-top:14px
+}
+.btn-full{width:100%}
+
+.success{margin-top:10px;color:#9be07b}
+.error{margin-top:10px;color:#ff6b6b}
+
+.footer{margin-top:18px;text-align:center;color:#bdbdbd;font-size:12px}
