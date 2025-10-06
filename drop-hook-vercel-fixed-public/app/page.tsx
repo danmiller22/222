@@ -43,8 +43,14 @@ export default function Page() {
       const urls: string[] = [];
       for (let i=0;i<10;i++) {
         const f = local[i]!;
-        const res = await upload(`drops/${Date.now()}_${i+1}_${f.name}`,
-          f, { access: 'public' });
+        const res = await upload(
+          `drops/${Date.now()}_${i+1}_${f.name}`,
+          f,
+          {
+            access: 'public',
+            handleUploadUrl: '/api/upload', // <-- ключевая правка
+          }
+        );
         urls.push(res.url);
       }
 
@@ -133,11 +139,15 @@ export default function Page() {
               {Array.from({length:10}).map((_,i)=>(
                 <div className="file-row" key={i}>
                   <label>{i+1}) {photoLabels[i]}</label>
-                  <input type="file" accept="image/*" required
-                         onChange={(e)=>{
-                           const f = e.target.files?.[0]||null;
-                           const clone = [...files]; clone[i]=f; setFiles(clone);
-                         }}/>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    required
+                    onChange={(e)=>{
+                      const f = e.target.files?.[0]||null;
+                      const clone = [...files]; clone[i]=f; setFiles(clone);
+                    }}
+                  />
                 </div>
               ))}
             </div>
