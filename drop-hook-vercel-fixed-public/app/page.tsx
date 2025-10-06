@@ -6,19 +6,6 @@ import { upload } from '@vercel/blob/client';
 
 type SubmitState = { status: 'idle'|'uploading'|'sending'|'done'|'error'; message?: string };
 
-const photoLabels = [
-  'Задние двери',
-  'Бок/шины (левая)',
-  'Бок/шины (правая)',
-  'Kingpin',
-  'Номер/ID трейлера',
-  'Внутри будки',
-  'Колёса — передняя ось',
-  'Колёса — задняя ось',
-  'Landing gear',
-  'Повреждения крупным планом',
-];
-
 export default function Page() {
   const [state, setState] = useState<SubmitState>({ status: 'idle' });
   const [files, setFiles] = useState<(File|null)[]>(Array(10).fill(null));
@@ -27,10 +14,14 @@ export default function Page() {
     e.preventDefault();
     const form = e.currentTarget;
     const fd = new FormData(form);
+
+    // обязательные поля текста
     const required = ['event_type','truck_number','driver_first','driver_last'];
     for (const k of required) {
       if (!fd.get(k)) { setState({status:'error', message:`Заполни поле: ${k}`}); return; }
     }
+
+    // обязательные 10 фото
     const local: File[] = [];
     for (let i=0;i<10;i++) {
       const f = files[i];
@@ -48,7 +39,7 @@ export default function Page() {
           f,
           {
             access: 'public',
-            handleUploadUrl: '/api/upload', // <-- ключевая правка
+            handleUploadUrl: '/api/upload',
           }
         );
         urls.push(res.url);
@@ -70,10 +61,7 @@ export default function Page() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error(t || 'Submit failed');
-      }
+      if (!resp.ok) throw new Error(await resp.text());
       setState({status:'done', message:'Готово — письмо отправлено.'});
       form.reset(); setFiles(Array(10).fill(null));
     } catch (err:any) {
@@ -85,63 +73,67 @@ export default function Page() {
     <div className="container">
       <div className="card">
         <div className="logo">
-        <Image src="/logo.png" alt="USTEAM" width={40} height={40} priority />
+          <Image src="/logo.png" alt="USTEAM" width={40} height={40} priority />
           <div className="brand">USTEAM — Drop / Hook</div>
         </div>
-        <h1 style={{color:'var(--accent)'}}>Drop / Hook</h1>
-        <p className="lead">Выбери тип, заполни поля и приложи <b>10 фото</b> — включая колёса. Красный акцент, лаконичный дизайн.</p>
+
+        <h1 className="title">Drop / Hook</h1>
+        <p className="lead">
+          Отправьте фото трейлера со всех сторон, все колёса, изнутри и снаружи.
+          <b> Все 10 обязательны.</b>
+        </p>
 
         <form onSubmit={onSubmit}>
-          <div className="grid">
-            <div>
-              <label>Тип события</label>
+          <div className="form-grid">
+            <div className="field">
+              <label>Тип</label>
               <select name="event_type" required defaultValue="Hook">
                 <option value="Hook">Hook</option>
                 <option value="Drop">Drop</option>
               </select>
             </div>
-            <div>
-              <label>Truck #</label>
-              <input type="text" name="truck_number" placeholder="Напр. 1234" required/>
-            </div>
-          </div>
 
-          <div className="grid">
-            <div>
-              <label>Имя водителя</label>
+            <div className="field">
+              <label>Truck #</label>
+              <input type="text" name="truck_number" inputMode="numeric" placeholder="Напр. 1234" required/>
+            </div>
+
+            <div className="field">
+              <label>Имя</label>
               <input type="text" name="driver_first" placeholder="Имя" required/>
             </div>
-            <div>
-              <label>Фамилия водителя</label>
+
+            <div className="field">
+              <label>Фамилия</label>
               <input type="text" name="driver_last" placeholder="Фамилия" required/>
             </div>
-          </div>
 
-          <div className="grid">
-            <div>
-              <label>Какой трейлер берёт</label>
-              <input type="text" name="trailer_pick" placeholder="Напр. TRL5678"/>
+            <div className="field">
+              <label>Берёт трейлер</label>
+              <input type="text" name="trailer_pick" placeholder="TRL5678"/>
             </div>
-            <div>
-              <label>Какой трейлер оставляет</label>
-              <input type="text" name="trailer_drop" placeholder="Напр. TRL4321"/>
-            </div>
-          </div>
 
-          <div>
-            <label>Примечания</label>
-            <textarea name="notes" placeholder="Повреждения, особенности и т.д."></textarea>
+            <div className="field">
+              <label>Оставляет трейлер</label>
+              <input type="text" name="trailer_drop" placeholder="TRL4321"/>
+            </div>
+
+            <div className="field field--full">
+              <label>Примечания</label>
+              <textarea name="notes" placeholder="Повреждения, особенности и т.д."></textarea>
+            </div>
           </div>
 
           <div className="photos">
-            <label>Фото — все 10 обязательны</label>
-            <div className="grid">
+            <div className="photos-note">Загрузите 10 фото (камера откроется сразу)</div>
+            <div className="photos-grid">
               {Array.from({length:10}).map((_,i)=>(
-                <div className="file-row" key={i}>
-                  <label>{i+1}) {photoLabels[i]}</label>
+                <div className="photo-input" key={i}>
+                  <span className="photo-index">{i+1}</span>
                   <input
                     type="file"
                     accept="image/*"
+                    capture="environment"
                     required
                     onChange={(e)=>{
                       const f = e.target.files?.[0]||null;
@@ -151,21 +143,17 @@ export default function Page() {
                 </div>
               ))}
             </div>
-            <div className="hint">Фотоссылки будут публичными (удобно для просмотра с телефона).</div>
           </div>
 
-          <div className="actions">
-            <button className="btn-secondary" type="reset" onClick={()=>setFiles(Array(10).fill(null))}>Очистить</button>
-            <button className="btn-primary" type="submit" disabled={state.status==='uploading'||state.status==='sending'}>
-              {state.status==='uploading'?'Загрузка…': state.status==='sending'?'Отправка…':'Отправить'}
-            </button>
-          </div>
+          <button className="btn-primary btn-full" type="submit" disabled={state.status==='uploading'||state.status==='sending'}>
+            {state.status==='uploading'?'Загрузка…': state.status==='sending'?'Отправка…':'Отправить'}
+          </button>
         </form>
 
         {state.status==='done' && <p className="success">Готово ✔ Письмо отправлено.</p>}
         {state.status==='error' && <p className="error">Ошибка: {state.message}</p>}
 
-        <div className="footer" style={{marginTop:24}}>
+        <div className="footer">
           <em>“It's our duty to lead people to the light”</em><br/>— D. Miller
         </div>
       </div>
