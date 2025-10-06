@@ -63,3 +63,8 @@ textarea{min-height:88px;resize:vertical}
 .error{margin-top:10px;color:#ff6b6b}
 
 .footer{margin-top:18px;text-align:center;color:#bdbdbd;font-size:12px}
+
+.angles{margin:8px 0 10px;padding-left:18px;color:var(--muted);font-size:13px;line-height:1.35}
+.picker{margin-top:10px;border:1px dashed #2a2a2a;border-radius:14px;background:#0d0d0d;padding:14px}
+.picker input{width:100%}
+.hint{margin-top:6px;color:var(--muted);font-size:12px}
