@@ -11,15 +11,15 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Каждый водитель обязан отправлять фото, когда берет (Hook) или оставляет (Drop) трейлер — иначе будут штрафы.',
+      'Каждый водитель обязан отправлять фото при взятии (Hook) или оставлении (Drop) трейлера — иначе будут штрафы. Загрузите РОВНО 10 фото по списку ниже.',
     type: 'Тип',
     hook: 'Hook',
     drop: 'Drop',
     truck: 'Truck #',
     first: 'Имя',
     last: 'Фамилия',
-    pick: 'Забирает трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
-    droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    pick: 'Берёт трейлер (если нет — напишите <b>нет</b>)',
+    droptr: 'Оставляет трейлер (если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
     choose10: 'Выберите сразу 10 фото из галереи. Рекомендуемые ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} из 10`,
@@ -48,7 +48,7 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — penalties otherwise.',
+      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — penalties otherwise. Upload EXACTLY 10 photos as listed below.',
     type: 'Type',
     hook: 'Hook',
     drop: 'Drop',
@@ -184,27 +184,27 @@ export default function Page() {
 
             <div className="field">
               <label>{t.truck}</label>
-              <input type="text" name="truck_number" inputMode="numeric" placeholder="263" required />
+              <input type="text" name="truck_number" inputMode="numeric" />
             </div>
 
             <div className="field">
               <label>{t.first}</label>
-              <input type="text" name="driver_first" required />
+              <input type="text" name="driver_first" />
             </div>
 
             <div className="field">
               <label>{t.last}</label>
-              <input type="text" name="driver_last" required />
+              <input type="text" name="driver_last" />
             </div>
 
             <div className="field">
               <label dangerouslySetInnerHTML={{__html:t.pick}} />
-              <input type="text" name="trailer_pick" placeholder={STR[lang].none} />
+              <input type="text" name="trailer_pick" />
             </div>
 
             <div className="field">
               <label dangerouslySetInnerHTML={{__html:t.droptr}} />
-              <input type="text" name="trailer_drop" placeholder={STR[lang].none} />
+              <input type="text" name="trailer_drop" />
             </div>
 
             <div className="field field--full">
