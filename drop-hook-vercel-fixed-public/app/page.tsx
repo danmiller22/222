@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
 
-type SubmitState = { status: 'idle'|'sending'|'done'|'error'; message?: string };
+type SubmitState = { status: 'idle'|'compressing'|'sending'|'done'|'error'; message?: string };
 type Lang = 'ru' | 'en';
 
 const STR = {
@@ -21,7 +21,7 @@ const STR = {
     pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
-    choose10: 'Выберите минимум 10 фото из галереи. Ракурсы:',
+    choose10: 'Выберите минимум 10 фото из галереи. Обязательные ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} (минимум 10)`,
     send: 'Отправить',
     sending: 'Отправка…',
@@ -83,6 +83,40 @@ const STR = {
   }
 } as const;
 
+/** Клиентское сжатие: long edge 1600px, JPEG ~0.75 */
+async function compressImage(file: File, maxDim = 1600, quality = 0.75): Promise<File> {
+  const img = document.createElement('img');
+  const url = URL.createObjectURL(file);
+  try {
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error('image load failed'));
+      img.src = url;
+    });
+    let { width, height } = img;
+    if (Math.max(width, height) > maxDim) {
+      if (width >= height) {
+        const k = maxDim / width;
+        width = maxDim;
+        height = Math.round(height * k);
+      } else {
+        const k = maxDim / height;
+        height = maxDim;
+        width = Math.round(width * k);
+      }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('no canvas ctx');
+    ctx.drawImage(img, 0, 0, width, height);
+    const blob: Blob = await new Promise((res) => canvas.toBlob(b => res(b as Blob), 'image/jpeg', quality));
+    return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export default function Page() {
   const [lang, setLang] = useState<Lang>('ru');
   const [state, setState] = useState<SubmitState>({ status: 'idle' });
@@ -102,16 +136,11 @@ export default function Page() {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
 
-    // МИНИМУМ 8 фото, без верхнего предела
+    // минимум 8 фото, верхнего предела нет
     if (files.length < 8) {
-      // используем существующий текст (не меняем слова)
-      setState({status:'error', message:t.must10(files.length)});
+      setState({status:'error', message:t.must10(files.length)}); // текст не меняем
       return;
     }
-
-    // сохранённый предохранитель по общему размеру — оставляем как есть
-    const totalBytes = files.reduce((s,f)=>s+f.size, 0);
-    if (totalBytes > 24 * 1024 * 1024) { setState({status:'error', message:t.tooBig}); return; }
 
     try {
       setState({status:'sending', message:t.sending});
@@ -137,13 +166,28 @@ export default function Page() {
     }
   }
 
-  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
-    setFiles(list);
+    if (list.length === 0) { setFiles([]); setState({status:'idle'}); return; }
 
-    // МИНИМУМ 8 фото, без верхнего предела
-    if (list.length < 8) setState({status:'error', message:STR[lang].must10(list.length)});
-    else setState({status:'idle', message: undefined});
+    // сжимаем все выбранные фото перед отправкой
+    setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
+    try {
+      const compressed: File[] = [];
+      for (const f of list) {
+        // только изображения — на всякий
+        if (!f.type.startsWith('image/')) continue;
+        const cf = await compressImage(f, 1600, 0.75);
+        compressed.push(cf);
+      }
+      setFiles(compressed);
+      // валидация на минимум 8
+      if (compressed.length < 8) setState({status:'error', message: STR[lang].must10(compressed.length)});
+      else setState({status:'idle', message: undefined});
+    } catch {
+      setFiles([]);
+      setState({status:'error', message: lang==='ru' ? 'Ошибка сжатия фото' : 'Image compression error'});
+    }
   }
 
   const t = STR[lang];
@@ -157,25 +201,25 @@ export default function Page() {
             <div className="brand">{t.brand}</div>
           </div>
 
-        {/* Apple-like segmented control */}
-        <div className="lang-toggle" role="group" aria-label="Language">
-          <button
-            type="button"
-            className={`seg ${lang==='ru' ? 'active' : ''}`}
-            onClick={() => setLang('ru')}
-            aria-pressed={lang==='ru'}
-          >
-            RU
-          </button>
-          <button
-            type="button"
-            className={`seg ${lang==='en' ? 'active' : ''}`}
-            onClick={() => setLang('en')}
-            aria-pressed={lang==='en'}
-          >
-            EN
-          </button>
-        </div>
+          {/* Apple-like segmented control */}
+          <div className="lang-toggle" role="group" aria-label="Language">
+            <button
+              type="button"
+              className={`seg ${lang==='ru' ? 'active' : ''}`}
+              onClick={() => setLang('ru')}
+              aria-pressed={lang==='ru'}
+            >
+              RU
+            </button>
+            <button
+              type="button"
+              className={`seg ${lang==='en' ? 'active' : ''}`}
+              onClick={() => setLang('en')}
+              aria-pressed={lang==='en'}
+            >
+              EN
+            </button>
+          </div>
         </div>
 
         <h1 className="title">{t.title}</h1>
@@ -229,16 +273,24 @@ export default function Page() {
             </ul>
 
             <div className="picker">
-              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select photos (min 8)" />
-              <div className="hint">{t.chosen(files.length)}</div>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={onPick}
+                aria-label="Select photos"
+              />
+              <div className="hint">
+                {t.chosen(files.length)}
+                {state.status==='compressing' ? (lang==='ru' ? ' • сжимаем…' : ' • compressing…') : null}
+              </div>
             </div>
           </div>
 
           <button
             className="btn-primary btn-full"
             type="submit"
-            disabled={state.status==='sending'}
-            // зелёная после успеха
+            disabled={state.status==='sending' || state.status==='compressing'}
             style={state.status==='done' ? { background:'#18b663', cursor:'default' } : undefined}
           >
             {state.status==='sending'
