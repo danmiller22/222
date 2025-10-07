@@ -20,26 +20,34 @@ export async function POST(req: Request) {
     const truck_number = String(form.get('truck_number') || '');
     const driver_first = String(form.get('driver_first') || '');
     const driver_last  = String(form.get('driver_last')  || '');
-    const trailer_pick = String(form.get('trailer_pick') || (lang==='ru'?'Напишите номер трейлера':'Trailer number'));
-    const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'Напишите номер трейлера':'Trailer number'));
+    const trailer_pick = String(form.get('trailer_pick') || (lang==='ru'?'нет':'none'));
+    const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'нет':'none'));
     const notes        = String(form.get('notes') || '');
 
     if (!event_type || !truck_number || !driver_first || !driver_last) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // gather photos
+    // >= 10 photos
     const files = form.getAll('photos') as unknown as File[];
-    if (files.length !== 10) {
-      return NextResponse.json({ error: `Expected 10 photos, got: ${files.length}` }, { status: 400 });
+    if (files.length < 10) {
+      return NextResponse.json({ error: `Expected at least 10 photos, got: ${files.length}` }, { status: 400 });
     }
+
+    // Кол-во вложений = все переданные файлы
     const attachments = await Promise.all(files.map(async (f, i) => ({
       filename: f?.name || `photo_${i+1}.jpg`,
       content: Buffer.from(await f.arrayBuffer()),
       contentType: f?.type || undefined,
     })));
 
-    // Chicago time
+    // Предохранитель по размеру (совокупно)
+    const totalSize = attachments.reduce((s,a)=> s + (a.content?.length || 0), 0);
+    if (totalSize > 24 * 1024 * 1024) {
+      return NextResponse.json({ error: 'Total attachments size exceeds ~24MB. Please upload smaller photos or fewer attachments.' }, { status: 413 });
+    }
+
+    // Time — America/Chicago
     const dt = new Intl.DateTimeFormat(lang==='ru'?'ru-RU':'en-US', {
       timeZone: 'America/Chicago',
       year: 'numeric', month: '2-digit', day: '2-digit',
@@ -51,28 +59,16 @@ export async function POST(req: Request) {
     const fullName = `${driver_first} ${driver_last}`.trim();
     const subject = `US Team Fleet — ${event_type} — Truck ${truck_number} — ${fullName}`;
 
-    const bodyText = (lang==='ru'
-      ? [
-          `Event: ${event_type}`,
-          `When: ${when}`,
-          `Truck #: ${truck_number}`,
-          `Driver: ${fullName}`,
-          `Trailer picked: ${trailer_pick}`,
-          `Trailer dropped: ${trailer_drop}`,
-          `Notes: ${notes}`,
-          `Photos: (10 attachments)`,
-        ].join('\n')
-      : [
-          `Event: ${event_type}`,
-          `When: ${when}`,
-          `Truck #: ${truck_number}`,
-          `Driver: ${fullName}`,
-          `Trailer picked: ${trailer_pick}`,
-          `Trailer dropped: ${trailer_drop}`,
-          `Notes: ${notes}`,
-          `Photos: (10 attachments)`,
-        ].join('\n')
-    );
+    const bodyText = [
+      `Event: ${event_type}`,
+      `When: ${when}`,
+      `Truck #: ${truck_number}`,
+      `Driver: ${fullName}`,
+      `Trailer picked: ${trailer_pick}`,
+      `Trailer dropped: ${trailer_drop}`,
+      `Notes: ${notes}`,
+      `Photos: (${files.length} attachments)`,
+    ].join('\n');
 
     const transporter = nodemailer.createTransport({
       host: envOrThrow('SMTP_HOST'),
