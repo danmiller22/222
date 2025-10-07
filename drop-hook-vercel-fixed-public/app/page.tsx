@@ -56,7 +56,7 @@ const STR = {
     first: 'First name',
     last: 'Last name',
     pick: 'Trailer picked (if none — write <b>none</b>)',
-    droptr: 'Trailer left (if none — write <b>none</b>)',
+    droptr: 'Trailer dropped (if none — write <b>none</b>)',
     notes: 'Notes',
     choose10: 'Select exactly 10 photos from gallery. Mandatory angles:',
     chosen: (n:number)=>`Selected: ${n} / 10`,
