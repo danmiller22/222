@@ -11,23 +11,23 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Каждый водитель обязан отправлять фото, когда берет (Hook) или оставляет (Drop) трейлер — во избежание штрафов!',
+      'Каждый водитель обязан отправлять фото при взятии (Hook) или оставлении (Drop) трейлера — иначе будут штрафы. Загрузите МИНИМУМ 10 фото по списку ниже (можно больше).',
     type: 'Тип',
     hook: 'Hook',
     drop: 'Drop',
     truck: 'Truck #',
     first: 'Имя',
     last: 'Фамилия',
-    pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
-    droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    pick: 'Берёт трейлер (если нет — напишите <b>нет</b>)',
+    droptr: 'Trailer dropped (если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
-    choose10: 'Выберите сразу 10 фото из галереи. Обязательные ракурсы:',
-    chosen: (n:number)=>`Выбрано: ${n} из 10`,
+    choose10: 'Выберите минимум 10 фото из галереи. Рекомендуемые ракурсы:',
+    chosen: (n:number)=>`Выбрано: ${n} (минимум 10)`,
     send: 'Отправить',
     sending: 'Отправка…',
     done: 'Готово ✔ Письмо отправлено.',
     needField: (k:string)=>`Заполни поле: ${k}`,
-    must10: (n:number)=>`Нужно ровно 10 фото. Сейчас: ${n}`,
+    must10: (n:number)=>`Мало фото: ${n}. Нужно минимум 10.`,
     tooBig: 'Суммарный размер фото >24MB. Снимайте меньшим размером.',
     err: 'Ошибка отправки',
     angles: [
@@ -48,7 +48,7 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — in order to avoid charges!',
+      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — penalties otherwise. Upload AT LEAST 10 photos from the list below (more is allowed).',
     type: 'Type',
     hook: 'Hook',
     drop: 'Drop',
@@ -58,18 +58,18 @@ const STR = {
     pick: 'Trailer picked (if none — write <b>none</b>)',
     droptr: 'Trailer dropped (if none — write <b>none</b>)',
     notes: 'Notes',
-    choose10: 'Select exactly 10 photos from gallery. Mandatory angles:',
-    chosen: (n:number)=>`Selected: ${n} / 10`,
+    choose10: 'Select at least 10 photos from gallery. Recommended angles:',
+    chosen: (n:number)=>`Selected: ${n} (min 10)`,
     send: 'Send',
     sending: 'Sending…',
     done: 'Done ✔ Email sent.',
     needField: (k:string)=>`Fill the field: ${k}`,
-    must10: (n:number)=>`You must select exactly 10 photos. Now: ${n}`,
+    must10: (n:number)=>`Too few photos: ${n}. Minimum is 10.`,
     tooBig: 'Total photo size >24MB. Use smaller images.',
     err: 'Submit error',
     angles: [
       'Trailer number',
-      'All tires',
+      'All wheels',
       'Inside the trailer',
       'Corners',
       'Ceilings',
@@ -101,8 +101,9 @@ export default function Page() {
     for (const k of required) {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
-    if (files.length !== 10) { setState({status:'error', message:t.must10(files.length)}); return; }
+    if (files.length < 10) { setState({status:'error', message:t.must10(files.length)}); return; }
 
+    // ВАЖНО: почтовые сервисы режут >~25MB. Оставляем предохранитель.
     const totalBytes = files.reduce((s,f)=>s+f.size, 0);
     if (totalBytes > 24 * 1024 * 1024) { setState({status:'error', message:t.tooBig}); return; }
 
@@ -133,7 +134,7 @@ export default function Page() {
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
     setFiles(list);
-    if (list.length !== 10) setState({status:'error', message:STR[lang].must10(list.length)});
+    if (list.length < 10) setState({status:'error', message:STR[lang].must10(list.length)});
     else setState({status:'idle', message: undefined});
   }
 
@@ -220,7 +221,7 @@ export default function Page() {
             </ul>
 
             <div className="picker">
-              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select 10 photos" />
+              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select photos (min 10)" />
               <div className="hint">{t.chosen(files.length)}</div>
             </div>
           </div>
