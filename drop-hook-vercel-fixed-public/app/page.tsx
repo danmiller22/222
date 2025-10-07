@@ -101,9 +101,15 @@ export default function Page() {
     for (const k of required) {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
-    if (files.length < 10) { setState({status:'error', message:t.must10(files.length)}); return; }
 
-    // ВАЖНО: почтовые сервисы режут >~25MB. Оставляем предохранитель.
+    // МИНИМУМ 8 фото, без верхнего предела
+    if (files.length < 8) {
+      // используем существующий текст (не меняем слова)
+      setState({status:'error', message:t.must10(files.length)});
+      return;
+    }
+
+    // сохранённый предохранитель по общему размеру — оставляем как есть
     const totalBytes = files.reduce((s,f)=>s+f.size, 0);
     if (totalBytes > 24 * 1024 * 1024) { setState({status:'error', message:t.tooBig}); return; }
 
@@ -134,7 +140,9 @@ export default function Page() {
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
     setFiles(list);
-    if (list.length < 10) setState({status:'error', message:STR[lang].must10(list.length)});
+
+    // МИНИМУМ 8 фото, без верхнего предела
+    if (list.length < 8) setState({status:'error', message:STR[lang].must10(list.length)});
     else setState({status:'idle', message: undefined});
   }
 
@@ -149,25 +157,25 @@ export default function Page() {
             <div className="brand">{t.brand}</div>
           </div>
 
-          {/* Apple-like segmented control */}
-          <div className="lang-toggle" role="group" aria-label="Language">
-            <button
-              type="button"
-              className={`seg ${lang==='ru' ? 'active' : ''}`}
-              onClick={() => setLang('ru')}
-              aria-pressed={lang==='ru'}
-            >
-              RU
-            </button>
-            <button
-              type="button"
-              className={`seg ${lang==='en' ? 'active' : ''}`}
-              onClick={() => setLang('en')}
-              aria-pressed={lang==='en'}
-            >
-              EN
-            </button>
-          </div>
+        {/* Apple-like segmented control */}
+        <div className="lang-toggle" role="group" aria-label="Language">
+          <button
+            type="button"
+            className={`seg ${lang==='ru' ? 'active' : ''}`}
+            onClick={() => setLang('ru')}
+            aria-pressed={lang==='ru'}
+          >
+            RU
+          </button>
+          <button
+            type="button"
+            className={`seg ${lang==='en' ? 'active' : ''}`}
+            onClick={() => setLang('en')}
+            aria-pressed={lang==='en'}
+          >
+            EN
+          </button>
+        </div>
         </div>
 
         <h1 className="title">{t.title}</h1>
@@ -221,13 +229,23 @@ export default function Page() {
             </ul>
 
             <div className="picker">
-              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select photos (min 10)" />
+              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select photos (min 8)" />
               <div className="hint">{t.chosen(files.length)}</div>
             </div>
           </div>
 
-          <button className="btn-primary btn-full" type="submit" disabled={state.status==='sending'}>
-            {state.status==='sending' ? t.sending : t.send}
+          <button
+            className="btn-primary btn-full"
+            type="submit"
+            disabled={state.status==='sending'}
+            // зелёная после успеха
+            style={state.status==='done' ? { background:'#18b663', cursor:'default' } : undefined}
+          >
+            {state.status==='sending'
+              ? t.sending
+              : state.status==='done'
+                ? (lang==='ru' ? 'Отправлено' : 'Sent')
+                : t.send}
           </button>
         </form>
 
