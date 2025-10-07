@@ -69,7 +69,7 @@ const STR = {
     err: 'Submit error',
     angles: [
       'Trailer number',
-      'All wheels',
+      'All tires',
       'Inside the trailer',
       'Corners',
       'Ceilings',
