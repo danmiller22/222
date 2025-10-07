@@ -11,7 +11,7 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Каждый водитель обязан отправлять фото при взятии (Hook) или оставлении (Drop) трейлера — иначе будут штрафы. Загрузите МИНИМУМ 10 фото по списку ниже (можно больше).',
+      'Каждый водитель обязан отправлять фото при взятии (Hook) или оставлении (Drop) трейлера — во избежание штрафов!',
     type: 'Тип',
     hook: 'Hook',
     drop: 'Drop',
@@ -48,7 +48,7 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — penalties otherwise. Upload AT LEAST 10 photos from the list below (more is allowed).',
+      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — in order to avoid charges!',
     type: 'Type',
     hook: 'Hook',
     drop: 'Drop',
