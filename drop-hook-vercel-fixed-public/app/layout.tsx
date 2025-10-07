@@ -1,5 +1,4 @@
-// app/layout.tsx  — замените целиком
-
+// app/layout.tsx
 import './globals.css';
 import type { Metadata } from 'next';
 
@@ -7,22 +6,19 @@ const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://hook-drop-form.verc
 
 export const metadata: Metadata = {
   metadataBase: new URL(baseUrl),
-  title: 'Mandatory Trailer Hook/Drop Form',
-  description:
-    'US Team Fleet — upload exactly 10 photos for every hook or drop.',
+  title: 'Trailer Hook-Drop — Mandatory Form',
+  // без description
   openGraph: {
-    title: 'Mandatory Trailer Hook/Drop Form',
-    description:
-      'US Team Fleet — upload exactly 10 photos for every hook or drop.',
+    title: 'Trailer Hook-Drop — Mandatory Form',
     url: '/',
     siteName: 'US Team Fleet',
     type: 'website',
+    // без description
   },
   twitter: {
     card: 'summary',
-    title: 'Mandatory Trailer Hook/Drop Form',
-    description:
-      'US Team Fleet — upload exactly 10 photos for every hook or drop.',
+    title: 'Trailer Hook-Drop — Mandatory Form',
+    // без description
   },
 };
 
