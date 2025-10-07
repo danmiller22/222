@@ -20,8 +20,8 @@ export async function POST(req: Request) {
     const truck_number = String(form.get('truck_number') || '');
     const driver_first = String(form.get('driver_first') || '');
     const driver_last  = String(form.get('driver_last')  || '');
-    const trailer_pick = String(form.get('trailer_pick') || (lang==='ru'?'нет':'none'));
-    const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'нет':'none'));
+    const trailer_pick = String(form.get('trailer_pick') || (lang==='ru'?'Напишите номер трейлера':'Trailer number'));
+    const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'Напишите номер трейлера':'Trailer number'));
     const notes        = String(form.get('notes') || '');
 
     if (!event_type || !truck_number || !driver_first || !driver_last) {
