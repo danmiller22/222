@@ -58,7 +58,7 @@ export async function POST(req: Request) {
           `Truck #: ${truck_number}`,
           `Driver: ${fullName}`,
           `Trailer picked: ${trailer_pick}`,
-          `Trailer left: ${trailer_drop}`,
+          `Trailer dropped: ${trailer_drop}`,
           `Notes: ${notes}`,
           `Photos: (10 attachments)`,
         ].join('\n')
@@ -68,7 +68,7 @@ export async function POST(req: Request) {
           `Truck #: ${truck_number}`,
           `Driver: ${fullName}`,
           `Trailer picked: ${trailer_pick}`,
-          `Trailer left: ${trailer_drop}`,
+          `Trailer dropped: ${trailer_drop}`,
           `Notes: ${notes}`,
           `Photos: (10 attachments)`,
         ].join('\n')
