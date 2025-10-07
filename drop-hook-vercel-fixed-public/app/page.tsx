@@ -11,17 +11,17 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Каждый водитель обязан отправлять фото, когда берет (Hook) или оставляет (Drop) трейлер — иначе будут штрафы',
+      'Каждый водитель обязан отправлять фото, когда берет (Hook) или оставляет (Drop) трейлер — иначе будут штрафы.',
     type: 'Тип',
     hook: 'Hook',
     drop: 'Drop',
     truck: 'Truck #',
     first: 'Имя',
     last: 'Фамилия',
-    pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    pick: 'Забирает трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
-    choose10: 'Выберите сразу 10 фото из галереи. Обязательные ракурсы:',
+    choose10: 'Выберите сразу 10 фото из галереи. Рекомендуемые ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} из 10`,
     send: 'Отправить',
     sending: 'Отправка…',
@@ -48,7 +48,7 @@ const STR = {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
     policy:
-      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — charges otherwise',
+      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — penalties otherwise.',
     type: 'Type',
     hook: 'Hook',
     drop: 'Drop',
@@ -58,7 +58,7 @@ const STR = {
     pick: 'Trailer picked (if none — write <b>none</b>)',
     droptr: 'Trailer left (if none — write <b>none</b>)',
     notes: 'Notes',
-    choose10: 'Select exactly 10 photos from gallery. Mandatory angles:',
+    choose10: 'Select exactly 10 photos from gallery. Recommended angles:',
     chosen: (n:number)=>`Selected: ${n} / 10`,
     send: 'Send',
     sending: 'Sending…',
@@ -199,12 +199,12 @@ export default function Page() {
 
             <div className="field">
               <label dangerouslySetInnerHTML={{__html:t.pick}} />
-              <input type="text" name="trailer_pick" placeholder={STR[lang].Trailer} />
+              <input type="text" name="trailer_pick" placeholder={STR[lang].none} />
             </div>
 
             <div className="field">
               <label dangerouslySetInnerHTML={{__html:t.droptr}} />
-              <input type="text" name="trailer_drop" placeholder={STR[lang].Trailer} />
+              <input type="text" name="trailer_drop" placeholder={STR[lang].none} />
             </div>
 
             <div className="field field--full">
