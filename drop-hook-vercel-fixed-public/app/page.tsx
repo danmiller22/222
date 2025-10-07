@@ -10,24 +10,25 @@ const STR = {
   ru: {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
-    policy: 'Каждый водитель обязан отправлять фото, когда берет и/или оставляет трейлер — иначе будут штрафы. Нужно загрузить ровно 10 фото по списку ниже.',
+    policy:
+      'Каждый водитель обязан отправлять фото при взятии (Hook) или оставлении (Drop) трейлера — иначе будут штрафы. Загрузите РОВНО 10 фото по списку ниже.',
     type: 'Тип',
     hook: 'Hook',
     drop: 'Drop',
     truck: 'Truck #',
-    first: 'Имя водителя',
-    last: 'Фамилия водителя',
-    pick: 'Берёт трейлер (если нет — напишите нет)',
-    droptr: 'Оставляет трейлер (если нет — напишите нет)',
+    first: 'Имя',
+    last: 'Фамилия',
+    pick: 'Берёт трейлер (если нет — напишите <b>нет</b>)',
+    droptr: 'Оставляет трейлер (если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
-    choose10: 'Выберите сразу 10 фото из галереи. Обязательные ракурсы:',
+    choose10: 'Выберите сразу 10 фото из галереи. Рекомендуемые ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} из 10`,
     send: 'Отправить',
     sending: 'Отправка…',
     done: 'Готово ✔ Письмо отправлено.',
     needField: (k:string)=>`Заполни поле: ${k}`,
-    must10: (n:number)=>`Выбери ровно 10 фото. Сейчас: ${n}`,
-    tooBig: 'Суммарный размер фото >24MB. Сделай снимки меньшего размера.',
+    must10: (n:number)=>`Нужно ровно 10 фото. Сейчас: ${n}`,
+    tooBig: 'Суммарный размер фото >24MB. Снимайте меньшим размером.',
     err: 'Ошибка отправки',
     angles: [
       'Номер трейлера',
@@ -46,15 +47,16 @@ const STR = {
   en: {
     brand: 'US Team Fleet',
     title: 'Drop / Hook',
-    policy: 'Every driver must submit photos when hooking or dropping a trailer — charges will apply otherwise. Upload 10 photos as listed below.',
+    policy:
+      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — penalties otherwise. Upload EXACTLY 10 photos as listed below.',
     type: 'Type',
     hook: 'Hook',
     drop: 'Drop',
     truck: 'Truck #',
     first: 'First name',
     last: 'Last name',
-    pick: 'Trailer picked (if none — write none)',
-    droptr: 'Trailer dropped (if none — write none)',
+    pick: 'Trailer picked (if none — write <b>none</b>)',
+    droptr: 'Trailer left (if none — write <b>none</b>)',
     notes: 'Notes',
     choose10: 'Select exactly 10 photos from gallery. Recommended angles:',
     chosen: (n:number)=>`Selected: ${n} / 10`,
@@ -62,20 +64,20 @@ const STR = {
     sending: 'Sending…',
     done: 'Done ✔ Email sent.',
     needField: (k:string)=>`Fill the field: ${k}`,
-    must10: (n:number)=>`Select exactly 10 photos. Now: ${n}`,
+    must10: (n:number)=>`You must select exactly 10 photos. Now: ${n}`,
     tooBig: 'Total photo size >24MB. Use smaller images.',
     err: 'Submit error',
     angles: [
       'Trailer number',
-      'All tires',
+      'All wheels',
       'Inside the trailer',
       'Corners',
-      'Roof',
+      'Ceilings',
       'Doors',
       'Left side (outside)',
       'Right side (outside)',
       'Front side (outside)',
-      'Plugs/Sockets',
+      'Sockets',
     ],
     none: 'none',
   }
@@ -86,7 +88,6 @@ export default function Page() {
   const [state, setState] = useState<SubmitState>({ status: 'idle' });
   const [files, setFiles] = useState<File[]>([]);
 
-  // запоминаем язык локально
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
 
@@ -146,9 +147,25 @@ export default function Page() {
             <Image src="/logo.png" alt="US Team Fleet" width={40} height={40} priority />
             <div className="brand">{t.brand}</div>
           </div>
-          <div style={{display:'flex', gap:6}}>
-            <button type="button" className="btn-secondary" onClick={()=>setLang('ru')} aria-pressed={lang==='ru'}>RU</button>
-            <button type="button" className="btn-secondary" onClick={()=>setLang('en')} aria-pressed={lang==='en'}>EN</button>
+
+          {/* Apple-like segmented control */}
+          <div className="lang-toggle" role="group" aria-label="Language">
+            <button
+              type="button"
+              className={`seg ${lang==='ru' ? 'active' : ''}`}
+              onClick={() => setLang('ru')}
+              aria-pressed={lang==='ru'}
+            >
+              RU
+            </button>
+            <button
+              type="button"
+              className={`seg ${lang==='en' ? 'active' : ''}`}
+              onClick={() => setLang('en')}
+              aria-pressed={lang==='en'}
+            >
+              EN
+            </button>
           </div>
         </div>
 
@@ -172,12 +189,12 @@ export default function Page() {
 
             <div className="field">
               <label>{t.first}</label>
-              <input type="text" name="driver_first" placeholder="" required />
+              <input type="text" name="driver_first" required />
             </div>
 
             <div className="field">
               <label>{t.last}</label>
-              <input type="text" name="driver_last" placeholder="" required />
+              <input type="text" name="driver_last" required />
             </div>
 
             <div className="field">
@@ -192,7 +209,7 @@ export default function Page() {
 
             <div className="field field--full">
               <label>{t.notes}</label>
-              <textarea name="notes" placeholder=""></textarea>
+              <textarea name="notes"></textarea>
             </div>
           </div>
 
