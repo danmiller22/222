@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
 
-type SubmitState = { status: 'idle'|'compressing'|'sending'|'done'|'error'; message?: string };
+type SubmitState = { status: 'idle'|'compressing'|'uploading'|'sending'|'done'|'error'; message?: string };
 type Lang = 'ru' | 'en';
 
 const STR = {
@@ -19,7 +19,7 @@ const STR = {
     first: 'Имя',
     last: 'Фамилия',
     pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
-    droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    droptr: 'Trailer dropped (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
     choose10: 'Выберите минимум 10 фото из галереи. Обязательные ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} (минимум 10)`,
@@ -88,33 +88,39 @@ async function compressImage(file: File, maxDim = 1600, quality = 0.75): Promise
   const img = document.createElement('img');
   const url = URL.createObjectURL(file);
   try {
-    await new Promise<void>((res, rej) => {
-      img.onload = () => res();
-      img.onerror = () => rej(new Error('image load failed'));
-      img.src = url;
-    });
+    await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error('image load failed')); img.src = url; });
     let { width, height } = img;
     if (Math.max(width, height) > maxDim) {
-      if (width >= height) {
-        const k = maxDim / width;
-        width = maxDim;
-        height = Math.round(height * k);
-      } else {
-        const k = maxDim / height;
-        height = maxDim;
-        width = Math.round(width * k);
-      }
+      if (width >= height) { const k = maxDim / width; width = maxDim; height = Math.round(height * k); }
+      else { const k = maxDim / height; height = maxDim; width = Math.round(width * k); }
     }
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = height;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('no canvas ctx');
     ctx.drawImage(img, 0, 0, width, height);
-    const blob: Blob = await new Promise((res) => canvas.toBlob(b => res(b as Blob), 'image/jpeg', quality));
+    const blob: Blob = await new Promise(res => canvas.toBlob(b => res(b as Blob), 'image/jpeg', quality));
     return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/** Получить presigned PUT на S3 */
+async function presign(filename: string, contentType: string) {
+  const r = await fetch('/api/presign', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ filename, contentType }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json() as Promise<{ url: string; key: string; publicUrl: string }>;
+}
+
+/** PUT файла на S3 */
+async function putFile(url: string, file: File) {
+  const res = await fetch(url, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
+  if (!res.ok) throw new Error(`PUT ${res.status}`);
 }
 
 export default function Page() {
@@ -136,27 +142,53 @@ export default function Page() {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
 
-    // минимум 8 фото, верхнего предела нет
-    if (files.length < 8) {
-      setState({status:'error', message:t.must10(files.length)}); // текст не меняем
-      return;
-    }
+    // Бизнес-логика: минимум 8 фото, верхнего предела нет
+    if (files.length < 8) { setState({status:'error', message:t.must10(files.length)}); return; }
 
     try {
-      setState({status:'sending', message:t.sending});
-      const payload = new FormData();
-      payload.set('lang', lang);
-      payload.set('event_type', String(fd.get('event_type')));
-      payload.set('truck_number', String(fd.get('truck_number')));
-      payload.set('driver_first', String(fd.get('driver_first')));
-      payload.set('driver_last', String(fd.get('driver_last')));
-      payload.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
-      payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
-      payload.set('notes', String(fd.get('notes') || ''));
+      // 1) Сжатие
+      setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
+      const compressed: File[] = [];
+      for (const f of files) {
+        if (!f.type.startsWith('image/')) continue;
+        compressed.push(await compressImage(f, 1600, 0.75));
+      }
 
-      files.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
+      // 2) Загрузка в S3 (presigned PUT), ограничим параллелизм
+      setState({status:'uploading', message: lang==='ru' ? 'Загрузка…' : 'Uploading…'});
+      const urls: string[] = [];
+      const concurrency = 3;
+      let i = 0;
+      async function worker() {
+        while (i < compressed.length) {
+          const idx = i++;
+          const f = compressed[idx];
+          const name = `drops/${Date.now()}_${idx+1}.jpg`;
+          const { url, publicUrl } = await presign(name, f.type);
+          await putFile(url, f);
+          urls.push(publicUrl);
+        }
+      }
+      await Promise.all(Array.from({length: Math.min(concurrency, compressed.length)}, worker));
 
-      const resp = await fetch('/api/submit', { method: 'POST', body: payload });
+      // 3) Отправка метаданных и ссылок на сервер (дальше уйдёт в Telegram)
+      setState({status:'sending', message: t.sending});
+      const payload = {
+        lang,
+        event_type: String(fd.get('event_type')),
+        truck_number: String(fd.get('truck_number')),
+        driver_first: String(fd.get('driver_first')),
+        driver_last: String(fd.get('driver_last')),
+        trailer_pick: String(fd.get('trailer_pick') || STR[lang].none),
+        trailer_drop: String(fd.get('trailer_drop') || STR[lang].none),
+        notes: String(fd.get('notes') || ''),
+        urls,
+      };
+      const resp = await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
       if (!resp.ok) throw new Error(await resp.text());
 
       setState({status:'done', message:t.done});
@@ -168,26 +200,9 @@ export default function Page() {
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
-    if (list.length === 0) { setFiles([]); setState({status:'idle'}); return; }
-
-    // сжимаем все выбранные фото перед отправкой
-    setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
-    try {
-      const compressed: File[] = [];
-      for (const f of list) {
-        // только изображения — на всякий
-        if (!f.type.startsWith('image/')) continue;
-        const cf = await compressImage(f, 1600, 0.75);
-        compressed.push(cf);
-      }
-      setFiles(compressed);
-      // валидация на минимум 8
-      if (compressed.length < 8) setState({status:'error', message: STR[lang].must10(compressed.length)});
-      else setState({status:'idle', message: undefined});
-    } catch {
-      setFiles([]);
-      setState({status:'error', message: lang==='ru' ? 'Ошибка сжатия фото' : 'Image compression error'});
-    }
+    setFiles(list);
+    if (list.length < 8) setState({status:'error', message:STR[lang].must10(list.length)});
+    else setState({status:'idle', message: undefined});
   }
 
   const t = STR[lang];
@@ -278,11 +293,13 @@ export default function Page() {
                 accept="image/*"
                 multiple
                 onChange={onPick}
-                aria-label="Select photos"
+                aria-label="Select photos (min 8)"
               />
               <div className="hint">
                 {t.chosen(files.length)}
-                {state.status==='compressing' ? (lang==='ru' ? ' • сжимаем…' : ' • compressing…') : null}
+                {state.status==='compressing' ? (lang==='ru' ? ' • сжимаем…' : ' • compressing…')
+                 : state.status==='uploading' ? (lang==='ru' ? ' • загрузка…' : ' • uploading…')
+                 : null}
               </div>
             </div>
           </div>
@@ -290,7 +307,7 @@ export default function Page() {
           <button
             className="btn-primary btn-full"
             type="submit"
-            disabled={state.status==='sending' || state.status==='compressing'}
+            disabled={state.status==='sending' || state.status==='compressing' || state.status==='uploading'}
             style={state.status==='done' ? { background:'#18b663', cursor:'default' } : undefined}
           >
             {state.status==='sending'
