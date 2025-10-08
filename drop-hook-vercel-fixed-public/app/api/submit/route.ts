@@ -12,37 +12,58 @@ function envOrThrow(name: string): string {
   return v;
 }
 const TG_API = () => `https://api.telegram.org/bot${envOrThrow('TELEGRAM_BOT_TOKEN')}`;
-const sleep = (ms:number)=>new Promise(res=>setTimeout(res,ms));
 
-async function fetchTG(path: string, init: RequestInit, tries = 5): Promise<Response> {
+// ----- Anti-429 / retry helpers -----
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+const jitter = (ms: number) => ms + Math.floor(Math.random() * 400);
+
+async function fetchTG(path: string, init: RequestInit, tries = 6): Promise<Response> {
+  let delay = 1200; // начальная пауза между ретраями
   for (let attempt = 1; attempt <= tries; attempt++) {
     const res = await fetch(`${TG_API()}${path}`, init);
     if (res.ok) return res;
 
+    // 429 — уважаем retry_after; добавляем jitter
     if (res.status === 429) {
-      let wait = 5;
+      let wait = 3000;
       try {
         const b = await res.clone().json();
-        if (b?.parameters?.retry_after) wait = Number(b.parameters.retry_after);
+        if (b?.parameters?.retry_after) wait = (Number(b.parameters.retry_after) + 1) * 1000;
       } catch {}
-      await sleep((wait + 1) * 1000);
+      await sleep(jitter(wait));
       continue;
     }
+
+    // 5xx — экспоненциальный бэкоф
     if (res.status >= 500 && res.status < 600) {
-      await sleep(1500 * attempt);
+      await sleep(jitter(delay));
+      delay *= 2;
       continue;
     }
+
+    // остальное — фейлим с текстом ошибки
     throw new Error(`Telegram ${path} failed: ${res.status} ${await res.text()}`);
   }
   throw new Error(`Telegram ${path} failed after ${tries} retries`);
 }
 
-type InputMediaPhoto = {
-  type: 'photo';
-  media: string;
-  caption?: string;
-  parse_mode?: 'HTML';
-};
+// ----- Telegram senders -----
+async function sendMessage(text: string) {
+  await fetchTG('/sendMessage', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: TELEGRAM_CHAT_ID,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    }),
+  });
+  // микропаузa, чтобы не схватить 429 на следующем запросе
+  await sleep(900);
+}
+
+type InputMediaPhoto = { type: 'photo'; media: string };
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -50,25 +71,18 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-// ⬇️ только медиагруппы; подпись (шапка) у первого фото ПЕРВОГО альбома
-async function sendTelegramMediaGroup(chatId: string, files: File[], caption?: string) {
-  const groups = chunk(files, 10); // лимит Telegram
+async function sendMediaGroupFiles(files: File[]) {
+  const groups = chunk(files, 10); // лимит альбома в Telegram — 10
 
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
     const fd = new FormData();
-    fd.set('chat_id', chatId);
+    fd.set('chat_id', TELEGRAM_CHAT_ID);
 
     const media: InputMediaPhoto[] = group.map((_, idx) => {
       const attachName = `file${idx}`;
-      const item: InputMediaPhoto = { type: 'photo', media: `attach://${attachName}` };
-      if (gi === 0 && idx === 0 && caption) {
-        item.caption = caption;
-        item.parse_mode = 'HTML';
-      }
-      return item;
+      return { type: 'photo', media: `attach://${attachName}` };
     });
-
     fd.set('media', JSON.stringify(media));
 
     for (let idx = 0; idx < group.length; idx++) {
@@ -78,8 +92,27 @@ async function sendTelegramMediaGroup(chatId: string, files: File[], caption?: s
       fd.append(`file${idx}`, new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
     }
 
+    // пробуем отправить медиагруппу; если 429/5xx — fetchTG сам ретраит
     await fetchTG('/sendMediaGroup', { method: 'POST', body: fd });
+
+    // мягкая пауза между альбомами, чтобы исключить 429
     if (gi < groups.length - 1) await sleep(1500);
+  }
+}
+
+// Фолбэк: если медиагруппа упорно не проходит, отправляем по одному фото с паузами
+async function sendPhotosIndividually(files: File[]) {
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const fd = new FormData();
+    fd.set('chat_id', TELEGRAM_CHAT_ID);
+
+    const buf = Buffer.from(await f.arrayBuffer());
+    const filename = f.name?.trim() ? f.name : `photo_single_${i + 1}.jpg`;
+    fd.append('photo', new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
+
+    await fetchTG('/sendPhoto', { method: 'POST', body: fd });
+    await sleep(1200); // чтоб не уткнуться в rate-limit
   }
 }
 
@@ -100,14 +133,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Получаем фото из формы, режем по нашему серверному лимиту: 8..15
+    // Принимаем 8..13 фото, лишнее отрезаем
     let files = form.getAll('photos') as unknown as File[];
     if (files.length < 8) {
       return NextResponse.json({ error: `Too few photos: ${files.length}. Minimum is 8.` }, { status: 400 });
     }
-    if (files.length > 15) {
-      files = files.slice(0, 15);
-    }
+    if (files.length > 13) files = files.slice(0, 13);
 
     // Chicago time
     const dt = new Intl.DateTimeFormat(lang==='ru'?'ru-RU':'en-US', {
@@ -119,8 +150,8 @@ export async function POST(req: Request) {
     const when = `${dt} America/Chicago`;
     const fullName = `${driver_first} ${driver_last}`.trim();
 
-    const isRu = lang === 'ru';
-    const header = (isRu ? [
+    // ЕДИНСТВЕННАЯ текстовая карточка (шаблон)
+    const header = (lang === 'ru' ? [
       `🚚 <b>US Team Fleet — ${event_type}</b>`,
       `Когда: <code>${when}</code>`,
       `Truck #: <b>${truck_number}</b>`,
@@ -140,11 +171,19 @@ export async function POST(req: Request) {
       `Photos: ${files.length}`,
     ]).join('\n');
 
-    // Отправляем ТОЛЬКО альбом(ы) — первая карточка содержит шапку в caption
-    await sendTelegramMediaGroup(TELEGRAM_CHAT_ID, files, header);
+    // 1) отправляем РОВНО одну текстовую карточку
+    await sendMessage(header);
+
+    // 2) пробуем отправить фото альбомами
+    try {
+      await sendMediaGroupFiles(files);
+    } catch (e) {
+      // 3) жёсткий фолбэк, если где-то упёрлись в лимиты: поштучно, с паузами
+      await sendPhotosIndividually(files);
+    }
 
     return NextResponse.json({ ok: true });
-  } catch (err:any) {
+  } catch (err: any) {
     console.error('submit->telegram failed:', err?.message || err);
     return NextResponse.json({ error: err?.message || 'Submit failed' }, { status: 500 });
   }
