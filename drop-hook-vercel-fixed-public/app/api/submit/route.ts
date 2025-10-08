@@ -14,14 +14,14 @@ function envOrThrow(name: string): string {
 }
 const TG_API = () => `https://api.telegram.org/bot${envOrThrow('TELEGRAM_BOT_TOKEN')}`;
 
-// ----------- Yard coords (Channahon yard) -----------
-const YARD = { lat: 41.444219, lon: -88.194936 }; // 27665 S Frontage Rd E, Channahon, IL 60410 (округлённые)
-const YARD_RADIUS_M = 70;  // радиус ярда 70 метров
-const YARD_FIXED_ACC_M = 10; // погрешность показываем как ±10 м
+// ---------- US TEAM Yard (круг площадью ~100 м²) ----------
+const YARD_CENTER = { lat: 41.380615, lon: -88.191687 }; // из твоей ссылки
+const YARD_AREA_M2 = 100; // ~100 квадратных метров
+const YARD_RADIUS_M = Math.sqrt(YARD_AREA_M2 / Math.PI); // ≈ 5.64 м
 
 // Haversine (метры)
 function metersBetween(a:{lat:number;lon:number}, b:{lat:number;lon:number}) {
-  const R = 6371000; // радиус Земли в метрах
+  const R = 6371000;
   const toRad = (x:number)=>x*Math.PI/180;
   const dLat = toRad(b.lat - a.lat);
   const dLon = toRad(b.lon - a.lon);
@@ -149,10 +149,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Geo (required на фронте, но здесь формируем текст)
+    // Geo (обязательна на фронте; здесь формируем строку локации)
     const geo_lat = form.get('geo_lat') ? Number(form.get('geo_lat')) : undefined;
     const geo_lon = form.get('geo_lon') ? Number(form.get('geo_lon')) : undefined;
-    // geo_acc нам теперь не нужен для вывода вне ярда
 
     // Фото 8..13
     let files = form.getAll('photos') as unknown as File[];
@@ -171,18 +170,15 @@ export async function POST(req: Request) {
     const when = `${dt} America/Chicago`;
     const fullName = `${driver_first} ${driver_last}`.trim();
 
-    // Линия локации:
-    // - если в пределах 70м от ярда -> "Yard (Channahon) (±15м)" / "(±15m)"
-    // - иначе только точные координаты + ссылка на Google Maps (без погрешности)
+    // Линия локации: внутри круга ~5.64 м — ярд; иначе — координаты + ссылка
     let locLine = lang==='ru' ? 'Локация: -' : 'Location: -';
     if (Number.isFinite(geo_lat) && Number.isFinite(geo_lon)) {
       const here = { lat: geo_lat as number, lon: geo_lon as number };
-      const distM = metersBetween(here, YARD);
+      const distM = metersBetween(here, YARD_CENTER);
       if (distM <= YARD_RADIUS_M) {
-        const accTxt = lang==='ru' ? ` (±${YARD_FIXED_ACC_M}м)` : ` (±${YARD_FIXED_ACC_M}m)`;
         locLine = lang==='ru'
-          ? `Локация: Yard (Channahon)${accTxt}`
-          : `Location: Yard (Channahon)${accTxt}`;
+          ? 'Локация: US TEAM Yard ( Channahon IL )'
+          : 'Location: US TEAM Yard ( Channahon IL )';
       } else {
         const mapUrl = `https://maps.google.com/?q=${here.lat.toFixed(6)},${here.lon.toFixed(6)}`;
         locLine = lang==='ru'
