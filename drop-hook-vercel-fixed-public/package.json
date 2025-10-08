@@ -2,6 +2,8 @@
   "name": "drop-hook-vercel",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
+  "engines": { "node": "22.x" },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,19 +11,9 @@
   },
   "dependencies": {
     "next": "14.2.4",
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "@vercel/blob": "^1.1.1",
-    "nodemailer": "6.9.13"
-  },
-  "devDependencies": {
-    "typescript": "^5.6.3",
-    "@types/node": "^20.14.12",
-    "@types/react": "^18.3.5",
-    "@types/react-dom": "^18.3.0",
-    "@types/nodemailer": "^6.4.14"
-  },
-  "engines": {
-    "node": "22.x"
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@aws-sdk/client-s3": "^3.633.0",
+    "@aws-sdk/s3-request-presigner": "^3.633.0"
   }
 }
