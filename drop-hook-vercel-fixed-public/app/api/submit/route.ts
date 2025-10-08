@@ -5,7 +5,6 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1003162402009';
-// Любое сообщение внутри нужного топика (из ссылки t.me/c/.../<message_id>)
 const TOPIC_ANCHOR = process.env.TELEGRAM_TOPIC_ANCHOR ? Number(process.env.TELEGRAM_TOPIC_ANCHOR) : undefined;
 
 function envOrThrow(name: string): string {
@@ -14,6 +13,23 @@ function envOrThrow(name: string): string {
   return v;
 }
 const TG_API = () => `https://api.telegram.org/bot${envOrThrow('TELEGRAM_BOT_TOKEN')}`;
+
+// ----------- Yard coords (Channahon yard) -----------
+// Примерные координаты E Frontage Rd в районе адреса (достаточно для радиуса 15mi)
+const YARD = { lat: 41.444219, lon: -88.194936 }; // источник: публичные карты района E Frontage Rd (Channahon)
+const YARD_RADIUS_MI = 15;
+
+// Haversine (мили)
+function milesBetween(a:{lat:number;lon:number}, b:{lat:number;lon:number}) {
+  const R = 3958.8; // Earth radius in miles
+  const toRad = (x:number)=>x*Math.PI/180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const la1 = toRad(a.lat);
+  const la2 = toRad(b.lat);
+  const h = Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 
 // ---------- anti-429 / retry ----------
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -54,7 +70,7 @@ async function sendMessage(text: string, replyTo?: number) {
   };
   if (replyTo) {
     body.reply_to_message_id = replyTo;
-    body.allow_sending_without_reply = true; // на случай очистки истории
+    body.allow_sending_without_reply = true;
   }
 
   await fetchTG('/sendMessage', {
@@ -69,7 +85,7 @@ type InputMediaPhoto = { type: 'photo'; media: string };
 const chunk = <T,>(a:T[], n:number)=>{ const r:T[][]=[]; for(let i=0;i<a.length;i+=n) r.push(a.slice(i,i+n)); return r; };
 
 async function sendMediaGroupFiles(files: File[], replyTo?: number) {
-  const groups = chunk(files, 10); // лимит альбома = 10
+  const groups = chunk(files, 10);
   for (let gi = 0; gi < groups.length; gi++) {
     const group = groups[gi];
     const fd = new FormData();
@@ -97,7 +113,6 @@ async function sendMediaGroupFiles(files: File[], replyTo?: number) {
   }
 }
 
-// фолбэк — поштучно с паузами
 async function sendPhotosIndividually(files: File[], replyTo?: number) {
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
@@ -134,6 +149,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
+    // Geo (optional)
+    const geo_lat = form.get('geo_lat') ? Number(form.get('geo_lat')) : undefined;
+    const geo_lon = form.get('geo_lon') ? Number(form.get('geo_lon')) : undefined;
+    const geo_acc = form.get('geo_acc') ? Number(form.get('geo_acc')) : undefined;
+
+    let locLine = lang==='ru' ? 'Локация: -' : 'Location: -';
+    if (Number.isFinite(geo_lat) && Number.isFinite(geo_lon)) {
+      const here = { lat: geo_lat as number, lon: geo_lon as number };
+      const d = milesBetween(here, YARD);
+      const milesTxt = `${d.toFixed(1)} mi`;
+      const mapUrl = `https://maps.google.com/?q=${here.lat.toFixed(6)},${here.lon.toFixed(6)}`;
+      if (d <= YARD_RADIUS_MI) {
+        locLine = lang==='ru'
+          ? `Локация: Yard (Channahon) ~ ${milesTxt}`
+          : `Location: Yard (Channahon) ~ ${milesTxt}`;
+      } else {
+        locLine = lang==='ru'
+          ? `Локация: ${here.lat.toFixed(5)}, ${here.lon.toFixed(5)} (~${milesTxt} от ярда) — ${mapUrl}`
+          : `Location: ${here.lat.toFixed(5)}, ${here.lon.toFixed(5)} (~${milesTxt} from yard) — ${mapUrl}`;
+      }
+      if (geo_acc) {
+        locLine += lang==='ru' ? ` (±${Math.round(geo_acc)}м)` : ` (±${Math.round(geo_acc)}m)`;
+      }
+    }
+
     // Фото 8..13
     let files = form.getAll('photos') as unknown as File[];
     if (files.length < 8) {
@@ -158,6 +198,7 @@ export async function POST(req: Request) {
       `Водитель: <b>${fullName}</b>`,
       `Взял (Hook): <b>${trailer_pick}</b>`,
       `Оставил (Drop): <b>${trailer_drop}</b>`,
+      locLine,
       `Заметки: ${notes || '-'}`,
       `Фото: ${files.length} шт.`,
     ] : [
@@ -167,13 +208,14 @@ export async function POST(req: Request) {
       `Driver: <b>${fullName}</b>`,
       `Trailer picked (Hook): <b>${trailer_pick}</b>`,
       `Trailer dropped (Drop): <b>${trailer_drop}</b>`,
+      locLine,
       `Notes: ${notes || '-'}`,
       `Photos: ${files.length}`,
     ]).join('\n');
 
-    const replyTo = TOPIC_ANCHOR; // якорь из ссылки
+    const replyTo = TOPIC_ANCHOR;
 
-    // 1) одна текстовая карточка — reply_to_message_id = anchor
+    // 1) одна текстовая карточка
     await sendMessage(header, replyTo);
 
     // 2) альбомы; при проблемах — поштучно
