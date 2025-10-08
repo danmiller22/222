@@ -16,7 +16,7 @@ const TG_API = () => `https://api.telegram.org/bot${envOrThrow('TELEGRAM_BOT_TOK
 
 // ---------- US TEAM Yard (круг ~120 м) ----------
 const YARD_CENTER = { lat: 41.380615, lon: -88.191687 }; // твоя точка
-const YARD_RADIUS_M = 150; // Увеличил радиус, чтобы уверенно покрыть площадку
+const YARD_RADIUS_M = 200; // Увеличил радиус, чтобы уверенно покрыть площадку
 
 // Haversine (метры)
 function metersBetween(a:{lat:number;lon:number}, b:{lat:number;lon:number}) {
