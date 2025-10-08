@@ -83,8 +83,30 @@ const STR = {
   }
 } as const;
 
-/** Клиентское сжатие: long edge 1024px, JPEG ~0.50 (ещё сильнее) */
-async function compressImage(file: File, maxDim = 1024, quality = 0.50): Promise<File> {
+/**
+ * УСИЛЕННЫЙ компрессор:
+ * - Целевая «вилка» по размеру файла: ~300 KB (по умолчанию).
+ * - Старт: maxDim=1024, quality=0.50.
+ * - Пошагово: quality -= 0.05 до 0.30; если всё ещё крупно — уменьшаем maxDim на 160px (до минимума 640).
+ * - Итог всегда JPEG.
+ */
+async function compressImageAdaptive(
+  file: File,
+  {
+    startMaxDim = 1024,
+    minMaxDim = 640,
+    stepDim = 160,
+    startQ = 0.50,
+    minQ = 0.30,
+    stepQ = 0.05,
+    targetBytes = 300 * 1024, // ~300 KB
+  }: Partial<{
+    startMaxDim: number; minMaxDim: number; stepDim: number;
+    startQ: number; minQ: number; stepQ: number;
+    targetBytes: number;
+  }> = {}
+): Promise<File> {
+  // Загружаем изображение
   const img = document.createElement('img');
   const url = URL.createObjectURL(file);
   try {
@@ -93,18 +115,49 @@ async function compressImage(file: File, maxDim = 1024, quality = 0.50): Promise
       img.onerror = () => rej(new Error('image load failed'));
       img.src = url;
     });
-    let { width, height } = img;
-    if (Math.max(width, height) > maxDim) {
-      if (width >= height) { const k = maxDim / width; width = maxDim; height = Math.round(height * k); }
-      else { const k = maxDim / height; height = maxDim; width = Math.round(width * k); }
+
+    let attemptMaxDim = startMaxDim;
+    let attemptQ = startQ;
+
+    // helper отрисовки с текущими параметрами
+    const render = (maxDim: number, q: number): Promise<Blob> => {
+      let { width, height } = img;
+      if (Math.max(width, height) > maxDim) {
+        if (width >= height) { const k = maxDim / width; width = maxDim; height = Math.round(height * k); }
+        else { const k = maxDim / height; height = maxDim; width = Math.round(width * k); }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('no canvas ctx');
+      ctx.drawImage(img, 0, 0, width, height);
+      return new Promise<Blob>((resolve) => {
+        canvas.toBlob(b => resolve(b as Blob), 'image/jpeg', q);
+      });
+    };
+
+    // цикл подборки параметров под целевой размер
+    // ограничим общее число итераций, чтобы не зависнуть
+    for (let safe = 0; safe < 50; safe++) {
+      const blob = await render(attemptMaxDim, attemptQ);
+      if (blob.size <= targetBytes || (attemptMaxDim <= minMaxDim && attemptQ <= minQ)) {
+        return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+      }
+      // уменьшаем качество, затем — размер
+      if (attemptQ - stepQ >= minQ) {
+        attemptQ = Number((attemptQ - stepQ).toFixed(2));
+      } else if (attemptMaxDim - stepDim >= minMaxDim) {
+        attemptQ = startQ; // вернём качество повыше и уменьшим геометрию
+        attemptMaxDim -= stepDim;
+      } else {
+        // уже упёрлись в минимумы — принимаем текущее
+        return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+      }
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = width; canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('no canvas ctx');
-    ctx.drawImage(img, 0, 0, width, height);
-    const blob: Blob = await new Promise(res => canvas.toBlob(b => res(b as Blob), 'image/jpeg', quality));
-    return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+
+    // на всякий — последняя попытка
+    const fallbackBlob = await render(minMaxDim, minQ);
+    return new File([fallbackBlob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -131,7 +184,7 @@ export default function Page() {
 
     // Мин. 8, Макс. 13
     if (files.length < 8) {
-      setState({status:'error', message:t.must10(files.length)}); // тексты не меняем
+      setState({status:'error', message:t.must10(files.length)});
       return;
     }
     if (files.length > 13) {
@@ -142,15 +195,26 @@ export default function Page() {
     }
 
     try {
-      // Сжатие
+      // Сжатие (адаптивное под размер)
       setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
       const compressed: File[] = [];
       for (const f of files) {
         if (!f.type.startsWith('image/')) continue;
-        compressed.push(await compressImage(f, 1024, 0.50));
+        // можно подправить targetBytes, если захочешь ещё сильнее/мягче
+        compressed.push(
+          await compressImageAdaptive(f, {
+            startMaxDim: 1024, // стартовая длинная сторона
+            minMaxDim: 640,    // минимум по длинной стороне
+            stepDim: 160,
+            startQ: 0.50,
+            minQ: 0.30,
+            stepQ: 0.05,
+            targetBytes: 300 * 1024, // ~300KB
+          })
+        );
       }
 
-      // FormData -> /api/submit (сервер шлёт в Telegram)
+      // FormData -> /api/submit
       const payload = new FormData();
       payload.set('lang', lang);
       payload.set('event_type', String(fd.get('event_type')));
