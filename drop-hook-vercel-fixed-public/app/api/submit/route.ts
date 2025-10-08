@@ -14,11 +14,11 @@ function envOrThrow(name: string): string {
 }
 const TG_API = () => `https://api.telegram.org/bot${envOrThrow('TELEGRAM_BOT_TOKEN')}`;
 
-// ---------- US TEAM Yard (круг ~120 м) ----------
-const YARD_CENTER = { lat: 41.380615, lon: -88.191687 }; // твоя точка
-const YARD_RADIUS_M = 200; // Увеличил радиус, чтобы уверенно покрыть площадку
+// ----- Yard геофенс (как в последней версии; при необходимости поменяй радиус) -----
+const YARD_CENTER = { lat: 41.380615, lon: -88.191687 };
+const YARD_RADIUS_M = 120; // при нужде скорректируй
 
-// Haversine (метры)
+// Haversine (м)
 function metersBetween(a:{lat:number;lon:number}, b:{lat:number;lon:number}) {
   const R = 6371000;
   const toRad = (x:number)=>x*Math.PI/180;
@@ -30,7 +30,7 @@ function metersBetween(a:{lat:number;lon:number}, b:{lat:number;lon:number}) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-// анти-429
+// anti-429
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 const jitter = (ms: number) => ms + Math.floor(Math.random() * 400);
 async function fetchTG(path: string, init: RequestInit, tries = 6): Promise<Response> {
@@ -38,6 +38,7 @@ async function fetchTG(path: string, init: RequestInit, tries = 6): Promise<Resp
   for (let attempt = 1; attempt <= tries; attempt++) {
     const res = await fetch(`${TG_API()}${path}`, init);
     if (res.ok) return res;
+
     if (res.status === 429) {
       let wait = 3000;
       try {
@@ -71,14 +72,17 @@ async function sendMediaGroupFiles(files: File[], replyTo?: number) {
     const fd = new FormData();
     fd.set('chat_id', CHAT_ID);
     if (replyTo) { fd.set('reply_to_message_id', String(replyTo)); fd.set('allow_sending_without_reply','true'); }
+
     const media: InputMediaPhoto[] = group.map((_, idx) => ({ type: 'photo', media: `attach://file${idx}` }));
     fd.set('media', JSON.stringify(media));
+
     for (let idx = 0; idx < group.length; idx++) {
       const f = group[idx];
       const buf = Buffer.from(await f.arrayBuffer());
       const filename = f.name?.trim() ? f.name : `photo_${gi + 1}_${idx + 1}.jpg`;
       fd.append(`file${idx}`, new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
     }
+
     await fetchTG('/sendMediaGroup', { method: 'POST', body: fd });
     if (gi < groups.length - 1) await sleep(1500);
   }
@@ -98,6 +102,19 @@ async function sendPhotosIndividually(files: File[], replyTo?: number) {
   }
 }
 
+// отправка документа (PDF/JPG) как документ
+async function sendDocument(file: File, caption?: string, replyTo?: number) {
+  const fd = new FormData();
+  fd.set('chat_id', CHAT_ID);
+  if (replyTo) { fd.set('reply_to_message_id', String(replyTo)); fd.set('allow_sending_without_reply','true'); }
+  const buf = Buffer.from(await file.arrayBuffer());
+  const filename = file.name?.trim() ? file.name : 'document.pdf';
+  fd.append('document', new Blob([buf], { type: file.type || 'application/octet-stream' }), filename);
+  if (caption) fd.set('caption', caption);
+  await fetchTG('/sendDocument', { method: 'POST', body: fd });
+  await sleep(900);
+}
+
 export async function POST(req: Request) {
   try {
     const form = await req.formData();
@@ -111,17 +128,33 @@ export async function POST(req: Request) {
     const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'нет':'none'));
     const notes        = String(form.get('notes') || '');
 
+    // Документы
+    const annual_mode = (String(form.get('annual_mode') || 'none') === 'yes') ? 'yes' : 'none';
+    const reg_mode    = (String(form.get('reg_mode') || 'none') === 'yes') ? 'yes' : 'none';
+    const annual_doc  = (form.get('annual_doc') as unknown as File) || null;
+    const reg_doc     = (form.get('reg_doc') as unknown as File) || null;
+
     if (!event_type || !truck_number || !driver_first || !driver_last) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+    // Требуем соответствие режимов
+    if (annual_mode === 'yes' && !annual_doc) {
+      return NextResponse.json({ error: 'Annual inspection missing' }, { status: 400 });
+    }
+    if (reg_mode === 'yes' && !reg_doc) {
+      return NextResponse.json({ error: 'Registration missing' }, { status: 400 });
+    }
 
+    // Гео
     const geo_lat = form.get('geo_lat') ? Number(form.get('geo_lat')) : undefined;
     const geo_lon = form.get('geo_lon') ? Number(form.get('geo_lon')) : undefined;
 
+    // Фото 8..13
     let files = form.getAll('photos') as unknown as File[];
     if (files.length < 8) return NextResponse.json({ error: `Too few photos: ${files.length}. Minimum is 8.` }, { status: 400 });
     if (files.length > 13) files = files.slice(0, 13);
 
+    // Chicago time
     const dt = new Intl.DateTimeFormat(lang==='ru'?'ru-RU':'en-US', {
       timeZone: 'America/Chicago',
       year:'numeric', month:'2-digit', day:'2-digit',
@@ -131,6 +164,7 @@ export async function POST(req: Request) {
     const when = `${dt} America/Chicago`;
     const fullName = `${driver_first} ${driver_last}`.trim();
 
+    // Локация
     let locLine = lang==='ru' ? 'Локация: -' : 'Location: -';
     if (Number.isFinite(geo_lat) && Number.isFinite(geo_lon)) {
       const here = { lat: geo_lat as number, lon: geo_lon as number };
@@ -147,6 +181,14 @@ export async function POST(req: Request) {
       }
     }
 
+    const annualLine = (lang==='ru'
+      ? `Annual Inspection: <b>${annual_mode==='yes' ? 'есть' : 'нет'}</b>`
+      : `Annual Inspection: <b>${annual_mode==='yes' ? 'available' : 'none'}</b>`);
+
+    const regLine = (lang==='ru'
+      ? `Registration: <b>${reg_mode==='yes' ? 'есть' : 'нет'}</b>`
+      : `Registration: <b>${reg_mode==='yes' ? 'available' : 'none'}</b>`);
+
     const header = (lang === 'ru' ? [
       `🚚 <b>US Team Fleet — ${event_type}</b>`,
       `Когда: <code>${when}</code>`,
@@ -155,6 +197,8 @@ export async function POST(req: Request) {
       `Взял (Hook): <b>${trailer_pick}</b>`,
       `Оставил (Drop): <b>${trailer_drop}</b>`,
       locLine,
+      annualLine,
+      regLine,
       `Заметки: ${notes || '-'}`,
       `Фото: ${files.length} шт.`,
     ] : [
@@ -165,15 +209,28 @@ export async function POST(req: Request) {
       `Trailer picked (Hook): <b>${trailer_pick}</b>`,
       `Trailer dropped (Drop): <b>${trailer_drop}</b>`,
       locLine,
+      annualLine,
+      regLine,
       `Notes: ${notes || '-'}`,
       `Photos: ${files.length}`,
     ]).join('\n');
 
     const replyTo = TOPIC_ANCHOR;
 
+    // 1) текстовая карточка
     await sendMessage(header, replyTo);
+
+    // 2) альбомы фото
     try { await sendMediaGroupFiles(files, replyTo); }
     catch { await sendPhotosIndividually(files, replyTo); }
+
+    // 3) документы (если есть) — шлём как документы отдельными сообщениями
+    if (annual_mode==='yes' && annual_doc) {
+      await sendDocument(annual_doc, (lang==='ru'?'Annual Inspection':'Annual Inspection'), replyTo);
+    }
+    if (reg_mode==='yes' && reg_doc) {
+      await sendDocument(reg_doc, (lang==='ru'?'Registration':'Registration'), replyTo);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (err:any) {
