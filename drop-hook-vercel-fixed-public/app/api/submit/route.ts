@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import nodemailer from 'nodemailer';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -8,6 +7,74 @@ function envOrThrow(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
+}
+
+const TELEGRAM_CHAT_ID = '-1003162402009'; // ← ваш ID группы
+const TG_API = () => {
+  const token = envOrThrow('TELEGRAM_BOT_TOKEN'); // задайте в Vercel
+  return `https://api.telegram.org/bot${token}`;
+};
+
+async function sendTelegramText(chatId: string, text: string) {
+  const res = await fetch(`${TG_API()}/sendMessage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    }),
+  });
+  if (!res.ok) throw new Error(`Telegram sendMessage failed: ${res.status} ${await res.text()}`);
+}
+
+type InputMediaPhoto = {
+  type: 'photo';
+  media: string;
+  caption?: string;
+  parse_mode?: 'HTML';
+};
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+async function sendTelegramMediaGroup(chatId: string, files: File[], caption?: string) {
+  const groups = chunk(files, 10); // лимит Telegram
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
+    const fd = new FormData();
+    fd.set('chat_id', chatId);
+
+    const media: InputMediaPhoto[] = group.map((_, idx) => {
+      const attachName = `file${idx}`;
+      const item: InputMediaPhoto = {
+        type: 'photo',
+        media: `attach://${attachName}`,
+      };
+      if (gi === 0 && idx === 0 && caption) {
+        item.caption = caption;
+        item.parse_mode = 'HTML';
+      }
+      return item;
+    });
+
+    fd.set('media', JSON.stringify(media));
+
+    for (let idx = 0; idx < group.length; idx++) {
+      const f = group[idx];
+      const buf = Buffer.from(await f.arrayBuffer());
+      const filename = f.name && f.name.trim().length ? f.name : `photo_${gi + 1}_${idx + 1}.jpg`;
+      fd.append(`file${idx}`, new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
+    }
+
+    const res = await fetch(`${TG_API()}/sendMediaGroup`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(`Telegram sendMediaGroup failed: ${res.status} ${await res.text()}`);
+  }
 }
 
 export async function POST(req: Request) {
@@ -28,26 +95,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // >= 10 photos
     const files = form.getAll('photos') as unknown as File[];
-    if (files.length < 10) {
-      return NextResponse.json({ error: `Expected at least 10 photos, got: ${files.length}` }, { status: 400 });
+    if (files.length < 8) {
+      return NextResponse.json({ error: `Too few photos: ${files.length}. Minimum is 8.` }, { status: 400 });
     }
 
-    // Кол-во вложений = все переданные файлы
-    const attachments = await Promise.all(files.map(async (f, i) => ({
-      filename: f?.name || `photo_${i+1}.jpg`,
-      content: Buffer.from(await f.arrayBuffer()),
-      contentType: f?.type || undefined,
-    })));
-
-    // Предохранитель по размеру (совокупно)
-    const totalSize = attachments.reduce((s,a)=> s + (a.content?.length || 0), 0);
-    if (totalSize > 24 * 1024 * 1024) {
-      return NextResponse.json({ error: 'Total attachments size exceeds ~24MB. Please upload smaller photos or fewer attachments.' }, { status: 413 });
-    }
-
-    // Time — America/Chicago
+    // Chicago time
     const dt = new Intl.DateTimeFormat(lang==='ru'?'ru-RU':'en-US', {
       timeZone: 'America/Chicago',
       year: 'numeric', month: '2-digit', day: '2-digit',
@@ -55,39 +108,38 @@ export async function POST(req: Request) {
       hour12: false,
     }).format(new Date());
     const when = `${dt} America/Chicago`;
-
     const fullName = `${driver_first} ${driver_last}`.trim();
-    const subject = `US Team Fleet — ${event_type} — Truck ${truck_number} — ${fullName}`;
 
-    const bodyText = [
-      `Event: ${event_type}`,
-      `When: ${when}`,
-      `Truck #: ${truck_number}`,
-      `Driver: ${fullName}`,
-      `Trailer picked: ${trailer_pick}`,
-      `Trailer dropped: ${trailer_drop}`,
-      `Notes: ${notes}`,
-      `Photos: (${files.length} attachments)`,
-    ].join('\n');
+    const isRu = lang === 'ru';
+    const headerLines = isRu ? [
+      `🚚 <b>US Team Fleet — ${event_type}</b>`,
+      `Когда: <code>${when}</code>`,
+      `Truck #: <b>${truck_number}</b>`,
+      `Водитель: <b>${fullName}</b>`,
+      `Взял (Hook): <b>${trailer_pick}</b>`,
+      `Оставил (Drop): <b>${trailer_drop}</b>`,
+      `Заметки: ${notes || '-'}`,
+      `Фото: ${files.length} шт.`,
+    ] : [
+      `🚚 <b>US Team Fleet — ${event_type}</b>`,
+      `When: <code>${when}</code>`,
+      `Truck #: <b>${truck_number}</b>`,
+      `Driver: <b>${fullName}</b>`,
+      `Trailer picked (Hook): <b>${trailer_pick}</b>`,
+      `Trailer dropped (Drop): <b>${trailer_drop}</b>`,
+      `Notes: ${notes || '-'}`,
+      `Photos: ${files.length}`,
+    ];
+    const headerText = headerLines.join('\n');
 
-    const transporter = nodemailer.createTransport({
-      host: envOrThrow('SMTP_HOST'),
-      port: Number(envOrThrow('SMTP_PORT')),
-      secure: String(process.env.USE_SSL||'false').toLowerCase()==='true',
-      auth: { user: envOrThrow('SMTP_USER'), pass: envOrThrow('SMTP_PASS') },
-    });
-
-    await transporter.sendMail({
-      from: envOrThrow('SMTP_USER'),
-      to: envOrThrow('EMAIL_TO'),
-      subject,
-      text: bodyText,
-      attachments,
-    });
+    // 1) текст
+    await sendTelegramText(TELEGRAM_CHAT_ID, headerText);
+    // 2) фото батчами по 10
+    await sendTelegramMediaGroup(TELEGRAM_CHAT_ID, files, headerText);
 
     return NextResponse.json({ ok: true });
   } catch (err:any) {
-    console.error('submit failed:', err?.message || err);
+    console.error('submit->telegram failed:', err?.message || err);
     return NextResponse.json({ error: err?.message || 'Submit failed' }, { status: 500 });
   }
 }
