@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
 
-type SubmitState = { status: 'idle'|'compressing'|'uploading'|'sending'|'done'|'error'; message?: string };
+type SubmitState = { status: 'idle'|'compressing'|'sending'|'done'|'error'; message?: string };
 type Lang = 'ru' | 'en';
 
 const STR = {
@@ -83,12 +83,16 @@ const STR = {
   }
 } as const;
 
-/** Клиентское сжатие: long edge 1600px, JPEG ~0.75 */
-async function compressImage(file: File, maxDim = 1600, quality = 0.75): Promise<File> {
+/** Клиентское сжатие: long edge 1280px, JPEG ~0.60 (сильнее) */
+async function compressImage(file: File, maxDim = 1280, quality = 0.60): Promise<File> {
   const img = document.createElement('img');
   const url = URL.createObjectURL(file);
   try {
-    await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(new Error('image load failed')); img.src = url; });
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error('image load failed'));
+      img.src = url;
+    });
     let { width, height } = img;
     if (Math.max(width, height) > maxDim) {
       if (width >= height) { const k = maxDim / width; width = maxDim; height = Math.round(height * k); }
@@ -104,23 +108,6 @@ async function compressImage(file: File, maxDim = 1600, quality = 0.75): Promise
   } finally {
     URL.revokeObjectURL(url);
   }
-}
-
-/** Получить presigned PUT на S3 */
-async function presign(filename: string, contentType: string) {
-  const r = await fetch('/api/presign', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ filename, contentType }),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json() as Promise<{ url: string; key: string; publicUrl: string }>;
-}
-
-/** PUT файла на S3 */
-async function putFile(url: string, file: File) {
-  const res = await fetch(url, { method: 'PUT', headers: { 'content-type': file.type }, body: file });
-  if (!res.ok) throw new Error(`PUT ${res.status}`);
 }
 
 export default function Page() {
@@ -142,53 +129,42 @@ export default function Page() {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
 
-    // Бизнес-логика: минимум 8 фото, верхнего предела нет
-    if (files.length < 8) { setState({status:'error', message:t.must10(files.length)}); return; }
+    // Мин. 8, Макс. 15
+    if (files.length < 8) {
+      setState({status:'error', message:t.must10(files.length)}); // текст не меняю
+      return;
+    }
+    if (files.length > 15) {
+      setState({status:'error', message: lang==='ru'
+        ? `Слишком много фото: ${files.length}. Максимум 15.`
+        : `Too many photos: ${files.length}. Max is 15.`});
+      return;
+    }
 
     try {
-      // 1) Сжатие
+      // сжатие перед отправкой
       setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
       const compressed: File[] = [];
       for (const f of files) {
         if (!f.type.startsWith('image/')) continue;
-        compressed.push(await compressImage(f, 1600, 0.75));
+        compressed.push(await compressImage(f, 1280, 0.60));
       }
 
-      // 2) Загрузка в S3 (presigned PUT), ограничим параллелизм
-      setState({status:'uploading', message: lang==='ru' ? 'Загрузка…' : 'Uploading…'});
-      const urls: string[] = [];
-      const concurrency = 3;
-      let i = 0;
-      async function worker() {
-        while (i < compressed.length) {
-          const idx = i++;
-          const f = compressed[idx];
-          const name = `drops/${Date.now()}_${idx+1}.jpg`;
-          const { url, publicUrl } = await presign(name, f.type);
-          await putFile(url, f);
-          urls.push(publicUrl);
-        }
-      }
-      await Promise.all(Array.from({length: Math.min(concurrency, compressed.length)}, worker));
+      // собираем FormData и шлём на /api/submit (сервер отправит в Telegram)
+      const payload = new FormData();
+      payload.set('lang', lang);
+      payload.set('event_type', String(fd.get('event_type')));
+      payload.set('truck_number', String(fd.get('truck_number')));
+      payload.set('driver_first', String(fd.get('driver_first')));
+      payload.set('driver_last', String(fd.get('driver_last')));
+      payload.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
+      payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
+      payload.set('notes', String(fd.get('notes') || ''));
 
-      // 3) Отправка метаданных и ссылок на сервер (дальше уйдёт в Telegram)
-      setState({status:'sending', message: t.sending});
-      const payload = {
-        lang,
-        event_type: String(fd.get('event_type')),
-        truck_number: String(fd.get('truck_number')),
-        driver_first: String(fd.get('driver_first')),
-        driver_last: String(fd.get('driver_last')),
-        trailer_pick: String(fd.get('trailer_pick') || STR[lang].none),
-        trailer_drop: String(fd.get('trailer_drop') || STR[lang].none),
-        notes: String(fd.get('notes') || ''),
-        urls,
-      };
-      const resp = await fetch('/api/submit', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
+
+      setState({status:'sending', message:t.sending});
+      const resp = await fetch('/api/submit', { method: 'POST', body: payload });
       if (!resp.ok) throw new Error(await resp.text());
 
       setState({status:'done', message:t.done});
@@ -202,6 +178,9 @@ export default function Page() {
     const list = e.target.files ? Array.from(e.target.files) : [];
     setFiles(list);
     if (list.length < 8) setState({status:'error', message:STR[lang].must10(list.length)});
+    else if (list.length > 15) setState({status:'error', message: lang==='ru'
+      ? `Слишком много фото: ${list.length}. Максимум 15.`
+      : `Too many photos: ${list.length}. Max is 15.`});
     else setState({status:'idle', message: undefined});
   }
 
@@ -293,21 +272,16 @@ export default function Page() {
                 accept="image/*"
                 multiple
                 onChange={onPick}
-                aria-label="Select photos (min 8)"
+                aria-label="Select photos (8–15)"
               />
-              <div className="hint">
-                {t.chosen(files.length)}
-                {state.status==='compressing' ? (lang==='ru' ? ' • сжимаем…' : ' • compressing…')
-                 : state.status==='uploading' ? (lang==='ru' ? ' • загрузка…' : ' • uploading…')
-                 : null}
-              </div>
+              <div className="hint">{t.chosen(files.length)}</div>
             </div>
           </div>
 
           <button
             className="btn-primary btn-full"
             type="submit"
-            disabled={state.status==='sending' || state.status==='compressing' || state.status==='uploading'}
+            disabled={state.status==='sending' || state.status==='compressing'}
             style={state.status==='done' ? { background:'#18b663', cursor:'default' } : undefined}
           >
             {state.status==='sending'
