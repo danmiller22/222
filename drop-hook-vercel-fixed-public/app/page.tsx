@@ -83,8 +83,8 @@ const STR = {
   }
 } as const;
 
-/** Клиентское сжатие: long edge 1280px, JPEG ~0.60 (сильнее) */
-async function compressImage(file: File, maxDim = 1280, quality = 0.60): Promise<File> {
+/** Клиентское сжатие: long edge 1024px, JPEG ~0.50 (ещё сильнее) */
+async function compressImage(file: File, maxDim = 1024, quality = 0.50): Promise<File> {
   const img = document.createElement('img');
   const url = URL.createObjectURL(file);
   try {
@@ -129,28 +129,28 @@ export default function Page() {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
 
-    // Мин. 8, Макс. 15
+    // Мин. 8, Макс. 13
     if (files.length < 8) {
-      setState({status:'error', message:t.must10(files.length)}); // текст не меняю
+      setState({status:'error', message:t.must10(files.length)}); // тексты не меняем
       return;
     }
-    if (files.length > 15) {
+    if (files.length > 13) {
       setState({status:'error', message: lang==='ru'
-        ? `Слишком много фото: ${files.length}. Максимум 15.`
-        : `Too many photos: ${files.length}. Max is 15.`});
+        ? `Слишком много фото: ${files.length}. Максимум 13.`
+        : `Too many photos: ${files.length}. Max is 13.`});
       return;
     }
 
     try {
-      // сжатие перед отправкой
+      // Сжатие
       setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
       const compressed: File[] = [];
       for (const f of files) {
         if (!f.type.startsWith('image/')) continue;
-        compressed.push(await compressImage(f, 1280, 0.60));
+        compressed.push(await compressImage(f, 1024, 0.50));
       }
 
-      // собираем FormData и шлём на /api/submit (сервер отправит в Telegram)
+      // FormData -> /api/submit (сервер шлёт в Telegram)
       const payload = new FormData();
       payload.set('lang', lang);
       payload.set('event_type', String(fd.get('event_type')));
@@ -174,13 +174,13 @@ export default function Page() {
     }
   }
 
-  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
     setFiles(list);
     if (list.length < 8) setState({status:'error', message:STR[lang].must10(list.length)});
-    else if (list.length > 15) setState({status:'error', message: lang==='ru'
-      ? `Слишком много фото: ${list.length}. Максимум 15.`
-      : `Too many photos: ${list.length}. Max is 15.`});
+    else if (list.length > 13) setState({status:'error', message: lang==='ru'
+      ? `Слишком много фото: ${list.length}. Максимум 13.`
+      : `Too many photos: ${list.length}. Max is 13.`});
     else setState({status:'idle', message: undefined});
   }
 
@@ -272,7 +272,7 @@ export default function Page() {
                 accept="image/*"
                 multiple
                 onChange={onPick}
-                aria-label="Select photos (8–15)"
+                aria-label="Select photos (8–13)"
               />
               <div className="hint">{t.chosen(files.length)}</div>
             </div>
