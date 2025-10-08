@@ -19,7 +19,7 @@ const STR = {
     first: 'Имя',
     last: 'Фамилия',
     pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
-    droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    droptr: 'Trailer dropped (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
     choose10: 'Выберите минимум 10 фото из галереи. Обязательные ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} (минимум 10)`,
@@ -47,6 +47,7 @@ const STR = {
     locGetting: 'Получаем…',
     locOK: 'Локация добавлена',
     locErr: 'Локация недоступна',
+    locHint: 'Дайте разрешение на локацию',
   },
   en: {
     brand: 'US Team Fleet',
@@ -88,6 +89,7 @@ const STR = {
     locGetting: 'Getting…',
     locOK: 'Location attached',
     locErr: 'Location unavailable',
+    locHint: 'Allow location access',
   }
 } as const;
 
@@ -196,6 +198,12 @@ export default function Page() {
       return;
     }
 
+    // Требуем локацию (без жёсткого алерта)
+    if (geo.status !== 'ok' || typeof geo.lat !== 'number' || typeof geo.lon !== 'number') {
+      // просто ничего не делаем — кнопка и так disabled; мягкая подсказка уже показана
+      return;
+    }
+
     try {
       setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
       const compressed: File[] = [];
@@ -220,12 +228,10 @@ export default function Page() {
       payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
       payload.set('notes', String(fd.get('notes') || ''));
 
-      // гео опционально
-      if (geo.lat && geo.lon) {
-        payload.set('geo_lat', String(geo.lat));
-        payload.set('geo_lon', String(geo.lon));
-        if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
-      }
+      // локация обязательна
+      payload.set('geo_lat', String(geo.lat));
+      payload.set('geo_lon', String(geo.lon));
+      if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
 
       compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
 
@@ -251,6 +257,7 @@ export default function Page() {
   }
 
   const t = STR[lang];
+  const submitBlocked = state.status==='sending' || state.status==='compressing' || geo.status!=='ok';
 
   return (
     <div className="container">
@@ -309,20 +316,26 @@ export default function Page() {
               <textarea name="notes"></textarea>
             </div>
 
-            {/* Локация — компактная кнопка */}
+            {/* Локация — обязательна, без красных ошибок */}
             <div className="field field--full">
               <label>{t.locBtn}</label>
-              <div style={{display:'flex', gap:8, alignItems:'center'}}>
-                <button type="button" className="seg" onClick={getLocation} disabled={geo.status==='getting'}>
+              <div style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
+                <button
+                  type="button"
+                  className={`loc-btn ${geo.status==='ok' ? 'ok' : ''}`}
+                  onClick={getLocation}
+                  disabled={geo.status==='getting'}
+                >
                   {geo.status==='getting' ? (lang==='ru'?t.locGetting:t.locGetting) : t.locBtn}
                 </button>
                 {geo.status==='ok' && (
                   <span className="hint">
-                    📍 {geo.lat?.toFixed(5)}, {geo.lon?.toFixed(5)} {geo.acc ? `(~${Math.round(geo.acc)}m)` : ''}
-                    &nbsp;— {lang==='ru'? t.locOK : t.locOK}
+                    📍 {geo.lat?.toFixed(5)}, {geo.lon?.toFixed(5)} {geo.acc ? `(~${Math.round(geo.acc)}m)` : ''} — {lang==='ru'? t.locOK : t.locOK}
                   </span>
                 )}
-                {geo.status==='err' && <span className="error">{t.locErr}</span>}
+                {geo.status!=='ok' && (
+                  <span className="soft-hint">{t.locHint}</span>
+                )}
               </div>
             </div>
           </div>
@@ -342,8 +355,9 @@ export default function Page() {
           <button
             className="btn-primary btn-full"
             type="submit"
-            disabled={state.status==='sending' || state.status==='compressing'}
+            disabled={submitBlocked}
             style={state.status==='done' ? { background:'#18b663', cursor:'default' } : undefined}
+            aria-disabled={submitBlocked}
           >
             {state.status==='sending'
               ? t.sending
@@ -360,6 +374,42 @@ export default function Page() {
           <em>“It's our duty to lead people to the light”</em><br/>— D. Miller
         </div>
       </div>
+
+      {/* Минимальный Apple-style для кнопки локации + мягкая подсказка */}
+      <style jsx global>{`
+        .loc-btn{
+          -webkit-tap-highlight-color: transparent;
+          appearance: none;
+          border: 0;
+          outline: none;
+          padding: 10px 16px;
+          border-radius: 9999px;
+          background: linear-gradient(180deg, #ffffff, #f4f4f6);
+          box-shadow:
+            0 1px 0 rgba(0,0,0,0.06),
+            inset 0 0 0 0.5px rgba(0,0,0,0.08);
+          color: #111;
+          font-weight: 600;
+          font-size: 14px;
+          letter-spacing: .2px;
+          transition: transform .06s ease, box-shadow .2s ease, background .2s ease;
+        }
+        .loc-btn:hover{ box-shadow:
+            0 2px 6px rgba(0,0,0,0.08),
+            inset 0 0 0 0.5px rgba(0,0,0,0.10); }
+        .loc-btn:active{ transform: translateY(1px); }
+        .loc-btn.ok{
+          background: linear-gradient(180deg, #e9f9ef, #d9f3e5);
+          box-shadow:
+            0 1px 0 rgba(0,0,0,0.05),
+            inset 0 0 0 0.5px rgba(24,182,99,0.55);
+          color: #127a45;
+        }
+        .soft-hint{
+          color: #6b7280; /* gray-500 */
+          font-size: 13px;
+        }
+      `}</style>
     </div>
   );
 }
