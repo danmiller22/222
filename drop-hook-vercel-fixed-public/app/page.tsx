@@ -19,7 +19,7 @@ const STR = {
     first: 'Имя',
     last: 'Фамилия',
     pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
-    droptr: 'Trailer dropped (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    droptr: 'Оставляет трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
     notes: 'Примечания',
     choose10: 'Выберите минимум 10 фото из галереи. Обязательные ракурсы:',
     chosen: (n:number)=>`Выбрано: ${n} (минимум 10)`,
@@ -43,6 +43,10 @@ const STR = {
       'Розетки',
     ],
     none: 'нет',
+    locBtn: 'Локация',
+    locGetting: 'Получаем…',
+    locOK: 'Локация добавлена',
+    locErr: 'Локация недоступна',
   },
   en: {
     brand: 'US Team Fleet',
@@ -80,16 +84,14 @@ const STR = {
       'Sockets',
     ],
     none: 'none',
+    locBtn: 'Location',
+    locGetting: 'Getting…',
+    locOK: 'Location attached',
+    locErr: 'Location unavailable',
   }
 } as const;
 
-/**
- * УСИЛЕННЫЙ компрессор:
- * - Целевая «вилка» по размеру файла: ~300 KB (по умолчанию).
- * - Старт: maxDim=1024, quality=0.50.
- * - Пошагово: quality -= 0.05 до 0.30; если всё ещё крупно — уменьшаем maxDim на 160px (до минимума 640).
- * - Итог всегда JPEG.
- */
+/** Усиленный компрессор (~300KB/фото), JPEG */
 async function compressImageAdaptive(
   file: File,
   {
@@ -99,14 +101,12 @@ async function compressImageAdaptive(
     startQ = 0.50,
     minQ = 0.30,
     stepQ = 0.05,
-    targetBytes = 300 * 1024, // ~300 KB
+    targetBytes = 300 * 1024,
   }: Partial<{
     startMaxDim: number; minMaxDim: number; stepDim: number;
-    startQ: number; minQ: number; stepQ: number;
-    targetBytes: number;
+    startQ: number; minQ: number; stepQ: number; targetBytes: number;
   }> = {}
 ): Promise<File> {
-  // Загружаем изображение
   const img = document.createElement('img');
   const url = URL.createObjectURL(file);
   try {
@@ -119,7 +119,6 @@ async function compressImageAdaptive(
     let attemptMaxDim = startMaxDim;
     let attemptQ = startQ;
 
-    // helper отрисовки с текущими параметрами
     const render = (maxDim: number, q: number): Promise<Blob> => {
       let { width, height } = img;
       if (Math.max(width, height) > maxDim) {
@@ -128,34 +127,27 @@ async function compressImageAdaptive(
       }
       const canvas = document.createElement('canvas');
       canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('no canvas ctx');
+      const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0, width, height);
       return new Promise<Blob>((resolve) => {
         canvas.toBlob(b => resolve(b as Blob), 'image/jpeg', q);
       });
     };
 
-    // цикл подборки параметров под целевой размер
-    // ограничим общее число итераций, чтобы не зависнуть
     for (let safe = 0; safe < 50; safe++) {
       const blob = await render(attemptMaxDim, attemptQ);
       if (blob.size <= targetBytes || (attemptMaxDim <= minMaxDim && attemptQ <= minQ)) {
         return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
       }
-      // уменьшаем качество, затем — размер
       if (attemptQ - stepQ >= minQ) {
         attemptQ = Number((attemptQ - stepQ).toFixed(2));
       } else if (attemptMaxDim - stepDim >= minMaxDim) {
-        attemptQ = startQ; // вернём качество повыше и уменьшим геометрию
+        attemptQ = startQ;
         attemptMaxDim -= stepDim;
       } else {
-        // уже упёрлись в минимумы — принимаем текущее
         return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
       }
     }
-
-    // на всякий — последняя попытка
     const fallbackBlob = await render(minMaxDim, minQ);
     return new File([fallbackBlob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
   } finally {
@@ -167,9 +159,23 @@ export default function Page() {
   const [lang, setLang] = useState<Lang>('ru');
   const [state, setState] = useState<SubmitState>({ status: 'idle' });
   const [files, setFiles] = useState<File[]>([]);
+  const [geo, setGeo] = useState<{lat?:number; lon?:number; acc?:number; status:'idle'|'getting'|'ok'|'err'}>({status:'idle'});
 
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
+
+  async function getLocation() {
+    if (!navigator.geolocation) { setGeo(g=>({...g,status:'err'})); return; }
+    setGeo(g=>({...g,status:'getting'}));
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
+      },
+      _err => setGeo(g=>({...g,status:'err'})),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -182,11 +188,7 @@ export default function Page() {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
 
-    // Мин. 8, Макс. 13
-    if (files.length < 8) {
-      setState({status:'error', message:t.must10(files.length)});
-      return;
-    }
+    if (files.length < 8) { setState({status:'error', message:t.must10(files.length)}); return; }
     if (files.length > 13) {
       setState({status:'error', message: lang==='ru'
         ? `Слишком много фото: ${files.length}. Максимум 13.`
@@ -195,26 +197,19 @@ export default function Page() {
     }
 
     try {
-      // Сжатие (адаптивное под размер)
       setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
       const compressed: File[] = [];
       for (const f of files) {
         if (!f.type.startsWith('image/')) continue;
-        // можно подправить targetBytes, если захочешь ещё сильнее/мягче
         compressed.push(
           await compressImageAdaptive(f, {
-            startMaxDim: 1024, // стартовая длинная сторона
-            minMaxDim: 640,    // минимум по длинной стороне
-            stepDim: 160,
-            startQ: 0.50,
-            minQ: 0.30,
-            stepQ: 0.05,
-            targetBytes: 300 * 1024, // ~300KB
+            startMaxDim: 1024, minMaxDim: 640, stepDim: 160,
+            startQ: 0.50, minQ: 0.30, stepQ: 0.05,
+            targetBytes: 300 * 1024,
           })
         );
       }
 
-      // FormData -> /api/submit
       const payload = new FormData();
       payload.set('lang', lang);
       payload.set('event_type', String(fd.get('event_type')));
@@ -224,6 +219,13 @@ export default function Page() {
       payload.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
       payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
       payload.set('notes', String(fd.get('notes') || ''));
+
+      // гео опционально
+      if (geo.lat && geo.lon) {
+        payload.set('geo_lat', String(geo.lat));
+        payload.set('geo_lon', String(geo.lon));
+        if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
+      }
 
       compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
 
@@ -258,25 +260,9 @@ export default function Page() {
             <Image src="/logo.png" alt="US Team Fleet" width={40} height={40} priority />
             <div className="brand">{t.brand}</div>
           </div>
-
-          {/* Apple-like segmented control */}
           <div className="lang-toggle" role="group" aria-label="Language">
-            <button
-              type="button"
-              className={`seg ${lang==='ru' ? 'active' : ''}`}
-              onClick={() => setLang('ru')}
-              aria-pressed={lang==='ru'}
-            >
-              RU
-            </button>
-            <button
-              type="button"
-              className={`seg ${lang==='en' ? 'active' : ''}`}
-              onClick={() => setLang('en')}
-              aria-pressed={lang==='en'}
-            >
-              EN
-            </button>
+            <button type="button" className={`seg ${lang==='ru' ? 'active' : ''}`} onClick={() => setLang('ru')} aria-pressed={lang==='ru'}>RU</button>
+            <button type="button" className={`seg ${lang==='en' ? 'active' : ''}`} onClick={() => setLang('en')} aria-pressed={lang==='en'}>EN</button>
           </div>
         </div>
 
@@ -322,6 +308,23 @@ export default function Page() {
               <label>{t.notes}</label>
               <textarea name="notes"></textarea>
             </div>
+
+            {/* Локация — компактная кнопка */}
+            <div className="field field--full">
+              <label>{t.locBtn}</label>
+              <div style={{display:'flex', gap:8, alignItems:'center'}}>
+                <button type="button" className="seg" onClick={getLocation} disabled={geo.status==='getting'}>
+                  {geo.status==='getting' ? (lang==='ru'?t.locGetting:t.locGetting) : t.locBtn}
+                </button>
+                {geo.status==='ok' && (
+                  <span className="hint">
+                    📍 {geo.lat?.toFixed(5)}, {geo.lon?.toFixed(5)} {geo.acc ? `(~${Math.round(geo.acc)}m)` : ''}
+                    &nbsp;— {lang==='ru'? t.locOK : t.locOK}
+                  </span>
+                )}
+                {geo.status==='err' && <span className="error">{t.locErr}</span>}
+              </div>
+            </div>
           </div>
 
           <div className="photos">
@@ -331,13 +334,7 @@ export default function Page() {
             </ul>
 
             <div className="picker">
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={onPick}
-                aria-label="Select photos (8–13)"
-              />
+              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select photos (8–13)" />
               <div className="hint">{t.chosen(files.length)}</div>
             </div>
           </div>
