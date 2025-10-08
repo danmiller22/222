@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 
 type SubmitState = { status: 'idle'|'compressing'|'sending'|'done'|'error'; message?: string };
 type Lang = 'ru' | 'en';
+type DocMode = 'yes'|'none';
 
 const STR = {
   ru: {
@@ -46,8 +47,16 @@ const STR = {
     locBtn: 'Локация',
     locGetting: 'Получаем…',
     locOK: 'Локация добавлена',
-    locErr: 'Локация недоступна',
     locHint: 'Дайте разрешение на локацию',
+
+    docsTitle: 'Документы',
+    docAnnual: 'Annual Inspection',
+    docReg: 'Trailer Registration',
+    has: 'Есть',
+    no: 'Нет',
+    attach: 'Прикрепить файл',
+    needDocAnnual: 'Приложи Annual Inspection или выбери «Нет».',
+    needDocReg: 'Приложи Registration или выбери «Нет».',
   },
   en: {
     brand: 'US Team Fleet',
@@ -88,12 +97,20 @@ const STR = {
     locBtn: 'Location',
     locGetting: 'Getting…',
     locOK: 'Location attached',
-    locErr: 'Location unavailable',
     locHint: 'Allow location access',
+
+    docsTitle: 'Documents',
+    docAnnual: 'Annual Inspection',
+    docReg: 'Trailer Registration',
+    has: 'Yes',
+    no: 'None',
+    attach: 'Attach file',
+    needDocAnnual: 'Attach Annual Inspection or select “None”.',
+    needDocReg: 'Attach Registration or select “None”.',
   }
 } as const;
 
-/** Усиленный компрессор (~300KB/фото), JPEG */
+/** JPEG компрессор (~300KB/фото) */
 async function compressImageAdaptive(
   file: File,
   {
@@ -163,6 +180,12 @@ export default function Page() {
   const [files, setFiles] = useState<File[]>([]);
   const [geo, setGeo] = useState<{lat?:number; lon?:number; acc?:number; status:'idle'|'getting'|'ok'|'err'}>({status:'idle'});
 
+  // Документы
+  const [annualMode, setAnnualMode] = useState<DocMode>('none');
+  const [annualFile, setAnnualFile] = useState<File|null>(null);
+  const [regMode, setRegMode] = useState<DocMode>('none');
+  const [regFile, setRegFile] = useState<File|null>(null);
+
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
 
@@ -198,11 +221,12 @@ export default function Page() {
       return;
     }
 
-    // Требуем локацию (без жёсткого алерта)
-    if (geo.status !== 'ok' || typeof geo.lat !== 'number' || typeof geo.lon !== 'number') {
-      // просто ничего не делаем — кнопка и так disabled; мягкая подсказка уже показана
-      return;
-    }
+    // Локация обязательна, без жёсткого алерта — кнопка disabled, мягкая подсказка на UI
+    if (geo.status !== 'ok' || typeof geo.lat !== 'number' || typeof geo.lon !== 'number') return;
+
+    // Валидация документов: если режим "есть", файл обязателен
+    if (annualMode === 'yes' && !annualFile) { setState({status:'error', message:t.needDocAnnual}); return; }
+    if (regMode === 'yes' && !regFile) { setState({status:'error', message:t.needDocReg}); return; }
 
     try {
       setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
@@ -228,19 +252,27 @@ export default function Page() {
       payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
       payload.set('notes', String(fd.get('notes') || ''));
 
-      // локация обязательна
+      // Гео
       payload.set('geo_lat', String(geo.lat));
       payload.set('geo_lon', String(geo.lon));
       if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
 
+      // Фото
       compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
+
+      // Документы
+      payload.set('annual_mode', annualMode);
+      payload.set('reg_mode', regMode);
+      if (annualMode === 'yes' && annualFile) payload.set('annual_doc', annualFile, annualFile.name || 'annual.pdf');
+      if (regMode === 'yes' && regFile) payload.set('reg_doc', regFile, regFile.name || 'registration.pdf');
 
       setState({status:'sending', message:t.sending});
       const resp = await fetch('/api/submit', { method: 'POST', body: payload });
       if (!resp.ok) throw new Error(await resp.text());
 
       setState({status:'done', message:t.done});
-      form.reset(); setFiles([]);
+      form.reset(); setFiles([]); setAnnualFile(null); setRegFile(null);
+      setAnnualMode('none'); setRegMode('none');
     } catch (err:any) {
       setState({status:'error', message: err?.message || STR[lang].err});
     }
@@ -316,7 +348,7 @@ export default function Page() {
               <textarea name="notes"></textarea>
             </div>
 
-            {/* Локация — обязательна, без красных ошибок */}
+            {/* ЛОКАЦИЯ */}
             <div className="field field--full">
               <label>{t.locBtn}</label>
               <div style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
@@ -328,15 +360,57 @@ export default function Page() {
                 >
                   {geo.status==='getting' ? (lang==='ru'?t.locGetting:t.locGetting) : t.locBtn}
                 </button>
-                {geo.status==='ok' && (
-                  <span className="hint">
-                    📍 {geo.lat?.toFixed(5)}, {geo.lon?.toFixed(5)} {geo.acc ? `(~${Math.round(geo.acc)}m)` : ''} — {lang==='ru'? t.locOK : t.locOK}
-                  </span>
-                )}
-                {geo.status!=='ok' && (
-                  <span className="soft-hint">{t.locHint}</span>
-                )}
+                {geo.status==='ok'
+                  ? <span className="hint">📍 {geo.lat?.toFixed(5)}, {geo.lon?.toFixed(5)} {geo.acc ? `(~${Math.round(geo.acc)}m)` : ''} — {t.locOK}</span>
+                  : <span className="soft-hint">{t.locHint}</span>}
               </div>
+            </div>
+
+            {/* ДОКУМЕНТЫ */}
+            <div className="field field--full">
+              <label>{t.docsTitle}</label>
+
+              {/* Annual */}
+              <div className="doc-row">
+                <div className="doc-label">{t.docAnnual}</div>
+                <div className="seg-wrap">
+                  <button type="button" className={`seg ${annualMode==='yes'?'active':''}`} onClick={()=>setAnnualMode('yes')}>{t.has}</button>
+                  <button type="button" className={`seg ${annualMode==='none'?'active':''}`} onClick={()=>{
+                    setAnnualMode('none'); setAnnualFile(null);
+                  }}>{t.no}</button>
+                </div>
+              </div>
+              {annualMode==='yes' && (
+                <div className="picker">
+                  <input
+                    type="file"
+                    accept="application/pdf,image/*"
+                    onChange={e=>setAnnualFile(e.target.files?.[0]||null)}
+                    aria-label={t.attach}
+                  />
+                </div>
+              )}
+
+              {/* Registration */}
+              <div className="doc-row" style={{marginTop:10}}>
+                <div className="doc-label">{t.docReg}</div>
+                <div className="seg-wrap">
+                  <button type="button" className={`seg ${regMode==='yes'?'active':''}`} onClick={()=>setRegMode('yes')}>{t.has}</button>
+                  <button type="button" className={`seg ${regMode==='none'?'active':''}`} onClick={()=>{
+                    setRegMode('none'); setRegFile(null);
+                  }}>{t.no}</button>
+                </div>
+              </div>
+              {regMode==='yes' && (
+                <div className="picker">
+                  <input
+                    type="file"
+                    accept="application/pdf,image/*"
+                    onChange={e=>setRegFile(e.target.files?.[0]||null)}
+                    aria-label={t.attach}
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -375,40 +449,31 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Минимальный Apple-style для кнопки локации + мягкая подсказка */}
+      {/* Apple-style для локации/переключателей */}
       <style jsx global>{`
         .loc-btn{
           -webkit-tap-highlight-color: transparent;
           appearance: none;
-          border: 0;
-          outline: none;
+          border: 0; outline: none;
           padding: 10px 16px;
           border-radius: 9999px;
           background: linear-gradient(180deg, #ffffff, #f4f4f6);
-          box-shadow:
-            0 1px 0 rgba(0,0,0,0.06),
-            inset 0 0 0 0.5px rgba(0,0,0,0.08);
-          color: #111;
-          font-weight: 600;
-          font-size: 14px;
-          letter-spacing: .2px;
+          box-shadow: 0 1px 0 rgba(0,0,0,0.06), inset 0 0 0 0.5px rgba(0,0,0,0.08);
+          color: #111; font-weight: 600; font-size: 14px; letter-spacing: .2px;
           transition: transform .06s ease, box-shadow .2s ease, background .2s ease;
         }
-        .loc-btn:hover{ box-shadow:
-            0 2px 6px rgba(0,0,0,0.08),
-            inset 0 0 0 0.5px rgba(0,0,0,0.10); }
+        .loc-btn:hover{ box-shadow: 0 2px 6px rgba(0,0,0,0.08), inset 0 0 0 0.5px rgba(0,0,0,0.10); }
         .loc-btn:active{ transform: translateY(1px); }
-        .loc-btn.ok{
-          background: linear-gradient(180deg, #e9f9ef, #d9f3e5);
-          box-shadow:
-            0 1px 0 rgba(0,0,0,0.05),
-            inset 0 0 0 0.5px rgba(24,182,99,0.55);
-          color: #127a45;
-        }
-        .soft-hint{
-          color: #6b7280; /* gray-500 */
-          font-size: 13px;
-        }
+        .loc-btn.ok{ background: linear-gradient(180deg, #e9f9ef, #d9f3e5); box-shadow: inset 0 0 0 0.5px rgba(24,182,99,0.55); color: #127a45; }
+
+        .seg-wrap{ display:flex; gap:6px; background:#f5f5f7; padding:4px; border-radius:9999px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); width:max-content; }
+        .seg{ border:0; background:transparent; padding:8px 14px; border-radius:9999px; font-weight:600; font-size:14px; color:#111; }
+        .seg.active{ background:white; box-shadow: 0 1px 0 rgba(0,0,0,.04), inset 0 0 0 1px rgba(0,0,0,.08); }
+
+        .doc-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+        .doc-label{ font-weight:600; }
+
+        .soft-hint{ color:#6b7280; font-size:13px; }
       `}</style>
     </div>
   );
