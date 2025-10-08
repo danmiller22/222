@@ -4,7 +4,6 @@ import { NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// TG группа (ваша)
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1003162402009';
 
 function envOrThrow(name: string): string {
@@ -20,7 +19,6 @@ async function fetchTG(path: string, init: RequestInit, tries = 5): Promise<Resp
     const res = await fetch(`${TG_API()}${path}`, init);
     if (res.ok) return res;
 
-    // 429 — уважаем retry_after
     if (res.status === 429) {
       let wait = 5;
       try {
@@ -30,114 +28,124 @@ async function fetchTG(path: string, init: RequestInit, tries = 5): Promise<Resp
       await sleep((wait + 1) * 1000);
       continue;
     }
-
-    // 5xx — короткий бэкоф
     if (res.status >= 500 && res.status < 600) {
       await sleep(1500 * attempt);
       continue;
     }
-
-    // иное — кидаем ошибку
     throw new Error(`Telegram ${path} failed: ${res.status} ${await res.text()}`);
   }
   throw new Error(`Telegram ${path} failed after ${tries} retries`);
 }
 
-async function sendMessage(text: string) {
-  await fetchTG('/sendMessage', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }),
-  });
+type InputMediaPhoto = {
+  type: 'photo';
+  media: string;
+  caption?: string;
+  parse_mode?: 'HTML';
+};
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
-type Media = { type: 'photo'|'document'; media: string; caption?: string; parse_mode?: 'HTML' };
-const chunk = <T,>(a:T[], n:number)=>{ const r:T[][]=[]; for(let i=0;i<a.length;i+=n) r.push(a.slice(i,i+n)); return r; };
-
-async function sendMediaGroups(urls: string[], caption: string) {
-  const groups = chunk(urls, 10); // лимит Telegram в одном альбоме
+// ⬇️ только медиагруппы; подпись (шапка) у первого фото ПЕРВОГО альбома
+async function sendTelegramMediaGroup(chatId: string, files: File[], caption?: string) {
+  const groups = chunk(files, 10); // лимит Telegram
 
   for (let gi = 0; gi < groups.length; gi++) {
-    const media: Media[] = groups[gi].map((u, idx) => ({
-      type: 'photo',
-      media: u, // отправка по URL (из S3)
-      ...(gi === 0 && idx === 0 ? { caption, parse_mode: 'HTML' as const } : {}),
-    }));
+    const group = groups[gi];
+    const fd = new FormData();
+    fd.set('chat_id', chatId);
 
-    await fetchTG('/sendMediaGroup', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, media }),
+    const media: InputMediaPhoto[] = group.map((_, idx) => {
+      const attachName = `file${idx}`;
+      const item: InputMediaPhoto = { type: 'photo', media: `attach://${attachName}` };
+      if (gi === 0 && idx === 0 && caption) {
+        item.caption = caption;
+        item.parse_mode = 'HTML';
+      }
+      return item;
     });
 
-    // мягкая пауза между альбомами
+    fd.set('media', JSON.stringify(media));
+
+    for (let idx = 0; idx < group.length; idx++) {
+      const f = group[idx];
+      const buf = Buffer.from(await f.arrayBuffer());
+      const filename = f.name?.trim() ? f.name : `photo_${gi + 1}_${idx + 1}.jpg`;
+      fd.append(`file${idx}`, new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
+    }
+
+    await fetchTG('/sendMediaGroup', { method: 'POST', body: fd });
     if (gi < groups.length - 1) await sleep(1500);
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const {
-      lang = 'en',
-      event_type, truck_number, driver_first, driver_last,
-      trailer_pick, trailer_drop, notes, urls
-    } = body || {};
+    const form = await req.formData();
 
-    if (!event_type || !truck_number || !driver_first || !driver_last || !Array.isArray(urls) || urls.length < 8) {
-      return NextResponse.json({ error: 'bad request' }, { status: 400 });
+    const lang = (String(form.get('lang') || 'en') === 'ru') ? 'ru' : 'en';
+    const event_type   = String(form.get('event_type') || '');
+    const truck_number = String(form.get('truck_number') || '');
+    const driver_first = String(form.get('driver_first') || '');
+    const driver_last  = String(form.get('driver_last')  || '');
+    const trailer_pick = String(form.get('trailer_pick') || (lang==='ru'?'нет':'none'));
+    const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'нет':'none'));
+    const notes        = String(form.get('notes') || '');
+
+    if (!event_type || !truck_number || !driver_first || !driver_last) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Время — America/Chicago
-    const dt = new Intl.DateTimeFormat(lang === 'ru' ? 'ru-RU' : 'en-US', {
+    // Получаем фото из формы, режем по нашему серверному лимиту: 8..15
+    let files = form.getAll('photos') as unknown as File[];
+    if (files.length < 8) {
+      return NextResponse.json({ error: `Too few photos: ${files.length}. Minimum is 8.` }, { status: 400 });
+    }
+    if (files.length > 15) {
+      files = files.slice(0, 15);
+    }
+
+    // Chicago time
+    const dt = new Intl.DateTimeFormat(lang==='ru'?'ru-RU':'en-US', {
       timeZone: 'America/Chicago',
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       hour12: false,
     }).format(new Date());
     const when = `${dt} America/Chicago`;
-    const name = `${driver_first} ${driver_last}`.trim();
+    const fullName = `${driver_first} ${driver_last}`.trim();
 
-    const header = (lang === 'ru' ? [
+    const isRu = lang === 'ru';
+    const header = (isRu ? [
       `🚚 <b>US Team Fleet — ${event_type}</b>`,
       `Когда: <code>${when}</code>`,
       `Truck #: <b>${truck_number}</b>`,
-      `Водитель: <b>${name}</b>`,
-      `Взял (Hook): <b>${trailer_pick || 'нет'}</b>`,
-      `Оставил (Drop): <b>${trailer_drop || 'нет'}</b>`,
+      `Водитель: <b>${fullName}</b>`,
+      `Взял (Hook): <b>${trailer_pick}</b>`,
+      `Оставил (Drop): <b>${trailer_drop}</b>`,
       `Заметки: ${notes || '-'}`,
-      `Фото: ${urls.length} шт.`,
+      `Фото: ${files.length} шт.`,
     ] : [
       `🚚 <b>US Team Fleet — ${event_type}</b>`,
       `When: <code>${when}</code>`,
       `Truck #: <b>${truck_number}</b>`,
-      `Driver: <b>${name}</b>`,
-      `Trailer picked (Hook): <b>${trailer_pick || 'none'}</b>`,
-      `Trailer dropped (Drop): <b>${trailer_drop || 'none'}</b>`,
+      `Driver: <b>${fullName}</b>`,
+      `Trailer picked (Hook): <b>${trailer_pick}</b>`,
+      `Trailer dropped (Drop): <b>${trailer_drop}</b>`,
       `Notes: ${notes || '-'}`,
-      `Photos: ${urls.length}`,
+      `Photos: ${files.length}`,
     ]).join('\n');
 
-    // 1) текстовая шапка
-    await sendMessage(header);
-
-    // 2) пробуем медиагруппы по URL
-    try {
-      await sendMediaGroups(urls, header);
-    } catch (e) {
-      // 3) фолбэк — список ссылок (дойдёт при любом раскладе)
-      const listText = header + '\n\n' + urls.map((u: string, i: number) => `${i + 1}. ${u}`).join('\n');
-      await sendMessage(listText);
-    }
+    // Отправляем ТОЛЬКО альбом(ы) — первая карточка содержит шапку в caption
+    await sendTelegramMediaGroup(TELEGRAM_CHAT_ID, files, header);
 
     return NextResponse.json({ ok: true });
-  } catch (e:any) {
-    console.error('submit->tg failed', e?.message || e);
-    return NextResponse.json({ error: e?.message || 'Submit failed' }, { status: 500 });
+  } catch (err:any) {
+    console.error('submit->telegram failed:', err?.message || err);
+    return NextResponse.json({ error: err?.message || 'Submit failed' }, { status: 500 });
   }
 }
