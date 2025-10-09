@@ -42,14 +42,12 @@ function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 function rand(min: number, max: number) { return Math.floor(min + Math.random() * (max - min + 1)); }
 function escapeHtml(s: string) { return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 
-// ВАЖНО: типобезопасное получение ArrayBuffer из Buffer (учитывая byteOffset/length)
+// Конвертация Buffer в ArrayBuffer (корректный BlobPart)
 function toArrayBuffer(buf: Buffer): ArrayBuffer {
-  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  // TS ожидает именно ArrayBuffer (не ArrayBufferLike) → slice гарантирует тип
-  return ab as ArrayBuffer;
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
-// ====== optional sharp (НЕ ломает билд, если не установлен) ======
+// ====== optional sharp (не ломает билд, если не установлен) ======
 let sharpAvailable = false;
 let sharp: any = null;
 try {
@@ -145,7 +143,6 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[], caption?: string) {
     const fd = new FormData();
     const media = group.map((p, i) => {
       const attachName = `photo_${i}`;
-      // Кладём именно ArrayBuffer — это валидный BlobPart для TS и рантайма
       const blob = new Blob([toArrayBuffer(p.data)], { type: p.type || "image/jpeg" });
       fd.append(attachName, blob, p.name || `p${i}.jpg`);
       return {
@@ -175,35 +172,20 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[], caption?: string) {
   }
 }
 
-// ====== Типы входа ======
-type InitPayload = {
-  phase: "init";
-  sessionId: string;
-  truck: string;
-  driver: string;
-  direction: "drop" | "hook";
-  coords?: { lat: number; lng: number };
-  notes?: string;
-};
-type PhotosPayload = {
-  phase: "photos";
-  sessionId: string;
-  coords?: { lat: number; lng: number };
-};
-
 // ====== Handler ======
 export async function POST(req: Request) {
   try {
     const contentType = req.headers.get("content-type") || "";
-    let phase: "init" | "photos";
 
+    // multipart → всегда photos
     if (contentType.includes("multipart/form-data")) {
-      // ---- photos (multipart) ----
       const form = await req.formData();
-      phase = String(form.get("phase") || "photos") as "photos";
-      if (phase !== "photos") {
+
+      const phaseVal = String(form.get("phase") || "photos");
+      if (phaseVal !== "photos") {
         return NextResponse.json({ ok: false, error: "Multipart поддерживает только phase=photos" }, { status: 400 });
       }
+
       const sessionId = String(form.get("sessionId") || "");
       if (!sessionId) return NextResponse.json({ ok: false, error: "sessionId required" }, { status: 400 });
 
@@ -234,72 +216,83 @@ export async function POST(req: Request) {
       await sendMediaGroupAdaptive(photos, `<b>ФОТО (${photos.length})</b>\nСессия: <code>${sessionId}</code>\n${metaBadge}`);
 
       return NextResponse.json({ ok: true, yardOk });
-    } else {
-      // ---- JSON ----
-      const body = (await req.json().catch(() => ({}))) as Partial<
-        InitPayload &
-          PhotosPayload & {
-            photosBase64?: string[];
-            overridePin?: string;
-          }
-      >;
-
-      if (!body || !body.phase) {
-        return NextResponse.json({ ok: false, error: "phase required" }, { status: 400 });
-      }
-      phase = body.phase;
-
-      if (phase === "init") {
-        const p = body as InitPayload & { overridePin?: string };
-        if (!p.sessionId || !p.truck || !p.driver || !p.direction) {
-          return NextResponse.json({ ok: false, error: "sessionId, truck, driver, direction обязательны" }, { status: 400 });
-        }
-        if (!p.coords) {
-          return NextResponse.json({ ok: false, error: "Требуется геолокация" }, { status: 400 });
-        }
-        const yardOk = inYard(p.coords);
-        if (!yardOk && OVERRIDE_PIN) {
-          const pin = (p as any).overridePin || req.headers.get("x-override-pin") || "";
-          if (pin !== OVERRIDE_PIN) {
-            return NextResponse.json({ ok: false, error: "Вне ярда. Нужен override PIN." }, { status: 403 });
-          }
-        }
-
-        const txt =
-          `<b>INIT</b>\n` +
-          `Сессия: <code>${p.sessionId}</code>\n` +
-          `Truck: <code>${p.truck}</code>\n` +
-          `Driver: <code>${p.driver}</code>\n` +
-          `Type: <code>${p.direction.toUpperCase()}</code>\n` +
-          `Coords: <code>${p.coords.lat.toFixed(6)}, ${p.coords.lng.toFixed(6)}</code>\n` +
-          `${inYard(p.coords) ? "✅ Внутри ярда" : "⛔️ ВНЕ ярда"}` +
-          (p.notes ? `\nNotes: ${escapeHtml(p.notes).slice(0, 500)}` : "");
-
-        await sendText(txt);
-        return NextResponse.json({ ok: true, yardOk });
-      }
-
-      if (phase === "photos") {
-        const base64 = (body as any).photosBase64 as string[] | undefined;
-        if (!base64 || base64.length < MIN_PHOTOS || base64.length > MAX_PHOTOS) {
-          return NextResponse.json({ ok: false, error: `Нужно ${MIN_PHOTOS}–${MAX_PHOTOS} фото (base64)` }, { status: 400 });
-        }
-        const photos: InputPhoto[] = [];
-        for (let i = 0; i < base64.length; i++) {
-          const b64 = base64[i];
-          const m = b64.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-          const mime = m?.[1] || "image/jpeg";
-          const dataStr = m?.[2] || b64;
-          const raw = Buffer.from(dataStr, "base64");
-          const { data, type } = await recompressIfNeeded(raw, mime);
-          photos.push({ name: `p${i}.jpg`, type, data });
-        }
-        await sendMediaGroupAdaptive(photos, `<b>ФОТО (${photos.length})</b>`);
-        return NextResponse.json({ ok: true });
-      }
-
-      return NextResponse.json({ ok: false, error: "Неизвестная phase" }, { status: 400 });
     }
+
+    // JSON → init / photos (base64)
+    const raw = await req.text().catch(() => "");
+    let body: any = {};
+    try {
+      body = raw ? JSON.parse(raw) : {};
+    } catch {
+      body = {};
+    }
+    if (typeof body !== "object" || body === null) body = {};
+
+    const phase: "init" | "photos" | undefined = body.phase;
+    if (!phase) {
+      return NextResponse.json({ ok: false, error: "phase required" }, { status: 400 });
+    }
+
+    if (phase === "init") {
+      const p = body as {
+        sessionId?: string;
+        truck?: string;
+        driver?: string;
+        direction?: "drop" | "hook";
+        coords?: { lat: number; lng: number };
+        notes?: string;
+        overridePin?: string;
+      };
+
+      if (!p.sessionId || !p.truck || !p.driver || !p.direction) {
+        return NextResponse.json({ ok: false, error: "sessionId, truck, driver, direction обязательны" }, { status: 400 });
+      }
+      if (!p.coords) {
+        return NextResponse.json({ ok: false, error: "Требуется геолокация" }, { status: 400 });
+      }
+
+      const yardOk = inYard(p.coords);
+      if (!yardOk && OVERRIDE_PIN) {
+        const pin = p.overridePin || req.headers.get("x-override-pin") || "";
+        if (pin !== OVERRIDE_PIN) {
+          return NextResponse.json({ ok: false, error: "Вне ярда. Нужен override PIN." }, { status: 403 });
+        }
+      }
+
+      const txt =
+        `<b>INIT</b>\n` +
+        `Сессия: <code>${p.sessionId}</code>\n` +
+        `Truck: <code>${p.truck}</code>\n` +
+        `Driver: <code>${p.driver}</code>\n` +
+        `Type: <code>${p.direction.toUpperCase()}</code>\n` +
+        `Coords: <code>${p.coords.lat.toFixed(6)}, ${p.coords.lng.toFixed(6)}</code>\n` +
+        `${inYard(p.coords) ? "✅ Внутри ярда" : "⛔️ ВНЕ ярда"}` +
+        (p.notes ? `\nNotes: ${escapeHtml(p.notes).slice(0, 500)}` : "");
+
+      await sendText(txt);
+      return NextResponse.json({ ok: true, yardOk });
+    }
+
+    if (phase === "photos") {
+      const base64 = body.photosBase64 as string[] | undefined;
+      if (!base64 || base64.length < MIN_PHOTOS || base64.length > MAX_PHOTOS) {
+        return NextResponse.json({ ok: false, error: `Нужно ${MIN_PHOTOS}–${MAX_PHOTOS} фото (base64)` }, { status: 400 });
+      }
+      const photos: InputPhoto[] = [];
+      for (let i = 0; i < base64.length; i++) {
+        const b64 = base64[i];
+        const m = b64.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        const mime = m?.[1] || "image/jpeg";
+        const dataStr = m?.[2] || b64;
+        const rawBuf = Buffer.from(dataStr, "base64");
+        const { data, type } = await recompressIfNeeded(rawBuf, mime);
+        photos.push({ name: `p${i}.jpg`, type, data });
+      }
+      await sendMediaGroupAdaptive(photos, `<b>ФОТО (${photos.length})</b>`);
+      return NextResponse.json({ ok: true });
+    }
+
+    return NextResponse.json({ ok: false, error: "Неизвестная phase" }, { status: 400 });
   } catch (err: any) {
     console.error("[submit] error:", err);
     return NextResponse.json({ ok: false, error: err?.message || "internal" }, { status: 500 });
