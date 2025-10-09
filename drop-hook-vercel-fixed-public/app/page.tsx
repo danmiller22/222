@@ -1,7 +1,7 @@
 'use client';
 
 import Image from 'next/image';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type SubmitState = { status: 'idle'|'compressing'|'sending'|'done'|'error'; message?: string };
 type Lang = 'ru' | 'en';
@@ -31,16 +31,8 @@ const STR = {
     tooBig: 'Суммарный размер фото >24MB. Снимайте меньшим размером.',
     err: 'Ошибка отправки',
     angles: [
-      'Номер трейлера',
-      'Все колёса',
-      'Внутрь трейлера',
-      'Углы',
-      'Потолки',
-      'Двери',
-      'Левая сторона снаружи',
-      'Правая сторона снаружи',
-      'Передняя часть снаружи',
-      'Розетки',
+      'Номер трейлера','Все колёса','Внутрь трейлера','Углы','Потолки',
+      'Двери','Левая сторона снаружи','Правая сторона снаружи','Передняя часть снаружи','Розетки',
     ],
     none: 'нет',
     locBtn: 'Локация',
@@ -73,16 +65,8 @@ const STR = {
     tooBig: 'Total photo size >24MB. Use smaller images.',
     err: 'Submit error',
     angles: [
-      'Trailer number',
-      'All tires',
-      'Inside the trailer',
-      'Corners',
-      'Roof',
-      'Doors',
-      'Left side (outside)',
-      'Right side (outside)',
-      'Front side (outside)',
-      'Sockets',
+      'Trailer number','All tires','Inside the trailer','Corners','Roof',
+      'Doors','Left side (outside)','Right side (outside)','Front side (outside)','Sockets',
     ],
     none: 'none',
     locBtn: 'Location',
@@ -92,6 +76,22 @@ const STR = {
     locHint: 'Allow location access',
   }
 } as const;
+
+/** Дружелюбные лейблы для ошибок (только тексты, UI не трогаем) */
+const FIELD_LABEL: Record<Lang, Record<string, string>> = {
+  ru: {
+    event_type: 'Тип',
+    truck_number: 'Truck #',
+    driver_first: 'Имя',
+    driver_last: 'Фамилия',
+  },
+  en: {
+    event_type: 'Type',
+    truck_number: 'Truck #',
+    driver_first: 'First name',
+    driver_last: 'Last name',
+  }
+};
 
 /** Усиленный компрессор (~300KB/фото), JPEG */
 async function compressImageAdaptive(
@@ -157,27 +157,29 @@ async function compressImageAdaptive(
   }
 }
 
+/** Генератор sessionId для мультипарт-отправки (требуется сервером) */
+function makeSessionId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function Page() {
   const [lang, setLang] = useState<Lang>('ru');
   const [state, setState] = useState<SubmitState>({ status: 'idle' });
   const [files, setFiles] = useState<File[]>([]);
   const [geo, setGeo] = useState<{lat?:number; lon?:number; acc?:number; status:'idle'|'getting'|'ok'|'err'}>({status:'idle'});
+  const sessionIdRef = useRef<string>(makeSessionId()); // ← добавили
 
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
 
-  // ====== ЛОКАЦИЯ (фикс) ======
+  // ====== ЛОКАЦИЯ (устойчивый запрос) ======
   async function getLocation() {
     setGeo(g => ({ ...g, status: 'getting' }));
-
-    // Нет API
     if (!('geolocation' in navigator)) {
       setGeo(g => ({ ...g, status: 'err' }));
       setState({ status: 'error', message: STR[lang].locErr });
       return;
     }
-
-    // Если явный deny — сразу подсказка
     try {
       const perm = (navigator.permissions as any)?.query
         ? await (navigator.permissions as any).query({ name: 'geolocation' as PermissionName })
@@ -187,41 +189,24 @@ export default function Page() {
         setState({ status: 'error', message: STR[lang].locHint });
         return;
       }
-    } catch { /* ignore */ }
+    } catch {}
 
     const once = (opts: PositionOptions) =>
       new Promise<GeolocationPosition>((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, opts);
       });
-
     const watchOnce = (opts: PositionOptions, timeoutMs = 12000) =>
       new Promise<GeolocationPosition>((resolve, reject) => {
         let done = false;
         const id = navigator.geolocation.watchPosition(
-          pos => {
-            if (done) return;
-            done = true;
-            navigator.geolocation.clearWatch(id);
-            resolve(pos);
-          },
-          err => {
-            if (done) return;
-            done = true;
-            navigator.geolocation.clearWatch(id);
-            reject(err);
-          },
+          pos => { if (done) return; done = true; navigator.geolocation.clearWatch(id); resolve(pos); },
+          err => { if (done) return; done = true; navigator.geolocation.clearWatch(id); reject(err); },
           opts
         );
-        setTimeout(() => {
-          if (done) return;
-          done = true;
-          navigator.geolocation.clearWatch(id);
-          reject(new Error('watchPosition timeout'));
-        }, timeoutMs);
+        setTimeout(() => { if (done) return; done = true; navigator.geolocation.clearWatch(id); reject(new Error('watchPosition timeout')); }, timeoutMs);
       });
 
     try {
-      // Быстро берём первый успешный фикс
       const pos = await Promise.race([
         once({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }),
         watchOnce({ enableHighAccuracy: true, maximumAge: 0 }, 12000),
@@ -230,7 +215,6 @@ export default function Page() {
       setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
       setState(s => (s.status === 'error' ? { status: 'idle' } : s));
     } catch {
-      // Вторая попытка — мягче
       try {
         const pos2 = await once({ enableHighAccuracy: false, timeout: 15000, maximumAge: 0 });
         const { latitude, longitude, accuracy } = pos2.coords;
@@ -250,10 +234,14 @@ export default function Page() {
     const form = e.currentTarget;
     const fd = new FormData(form);
 
-    // Обязательные поля
+    // Обязательные поля (чёткие лейблы)
     const required = ['event_type','truck_number','driver_first','driver_last'];
     for (const k of required) {
-      if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
+      if (!fd.get(k)) {
+        const label = FIELD_LABEL[lang][k] || k;
+        setState({status:'error', message: t.needField(label)});
+        return;
+      }
     }
 
     // Фото: минимум 8, максимум 20
@@ -291,7 +279,9 @@ export default function Page() {
       }
 
       const payload = new FormData();
-      payload.set('lang', lang);
+      // обязательные данные
+      payload.set('phase', 'photos'); // сервер ожидает
+      payload.set('sessionId', sessionIdRef.current); // ← фикс «sessionId required»
       payload.set('event_type', String(fd.get('event_type')));
       payload.set('truck_number', String(fd.get('truck_number')));
       payload.set('driver_first', String(fd.get('driver_first')));
@@ -299,20 +289,25 @@ export default function Page() {
       payload.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
       payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
       payload.set('notes', String(fd.get('notes') || ''));
-
-      // локация обязательна
-      payload.set('geo_lat', String(geo.lat));
-      payload.set('geo_lon', String(geo.lon));
+      // локация
+      payload.set('lat', String(geo.lat));
+      payload.set('lng', String(geo.lon));
       if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
-
+      // фото
       compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
 
       setState({status:'sending', message:t.sending});
       const resp = await fetch('/api/submit', { method: 'POST', body: payload });
-      if (!resp.ok) throw new Error(await resp.text());
+      const text = await resp.text();
+      if (!resp.ok) throw new Error(text || 'submit failed');
+      try {
+        const j = JSON.parse(text);
+        if (!j?.ok) throw new Error(j?.error || 'submit failed');
+      } catch { /* если сервер вернул текст OK без JSON */ }
 
       setState({status:'done', message:t.done});
       form.reset(); setFiles([]);
+      sessionIdRef.current = makeSessionId(); // новая сессия на следующий раз
     } catch (err:any) {
       setState({status:'error', message: err?.message || STR[lang].err});
     }
@@ -321,7 +316,6 @@ export default function Page() {
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
     setFiles(list);
-    // Сообщения — без изменения интерфейса
     if (list.length < 8) {
       setState({status:'error', message: STR[lang] === STR.ru
         ? `Мало фото: ${list.length}. Нужно минимум 8.`
@@ -336,7 +330,6 @@ export default function Page() {
   }
 
   const t = STR[lang];
-  // Кнопку не блокируем из-за гео, чтобы при попытке сабмита вывести ошибку
   const submitBlocked = state.status==='sending' || state.status==='compressing';
 
   return (
@@ -455,7 +448,6 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Кнопка локации и подсказки — внешний вид не менял */}
       <style jsx global>{`
         .loc-btn{
           -webkit-tap-highlight-color: transparent;
