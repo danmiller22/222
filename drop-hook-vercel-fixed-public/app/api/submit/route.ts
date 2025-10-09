@@ -41,14 +41,18 @@ function inYard(coords?: { lat: number; lng: number }) {
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 function rand(min: number, max: number) { return Math.floor(min + Math.random() * (max - min + 1)); }
 function escapeHtml(s: string) { return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
-function asBlobPart(buf: Buffer): Uint8Array { return new Uint8Array(buf); } // TS-совместимый BlobPart
+
+// ВАЖНО: типобезопасное получение ArrayBuffer из Buffer (учитывая byteOffset/length)
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  // TS ожидает именно ArrayBuffer (не ArrayBufferLike) → slice гарантирует тип
+  return ab as ArrayBuffer;
+}
 
 // ====== optional sharp (НЕ ломает билд, если не установлен) ======
 let sharpAvailable = false;
 let sharp: any = null;
 try {
-  // ВАЖНО: eval('require') — чтобы бандлер Next/Vercel не пытался резолвить 'sharp'
-  // и не падал, даже если зависимости нет.
   // eslint-disable-next-line no-eval
   const req: any = (globalThis as any).require || eval("require");
   sharp = req?.("sharp");
@@ -141,8 +145,8 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[], caption?: string) {
     const fd = new FormData();
     const media = group.map((p, i) => {
       const attachName = `photo_${i}`;
-      // ВАЖНО: используем Uint8Array вместо Buffer → TS ок; Node Blob понимает
-      const blob = new Blob([asBlobPart(p.data)], { type: p.type || "image/jpeg" });
+      // Кладём именно ArrayBuffer — это валидный BlobPart для TS и рантайма
+      const blob = new Blob([toArrayBuffer(p.data)], { type: p.type || "image/jpeg" });
       fd.append(attachName, blob, p.name || `p${i}.jpg`);
       return {
         type: "photo",
