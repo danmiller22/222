@@ -5,8 +5,8 @@ export const runtime = "nodejs";
 
 // ===== ENV =====
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || ""; // например: -1003162402009
-const TG_TOPIC_ID = Number(process.env.TELEGRAM_TOPIC_ID || process.env.TELEGRAM_TOPIC_ANCHOR || 0); // например: 5
+const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || ""; // напр.: -1003162402009
+const TG_TOPIC_ID = Number(process.env.TELEGRAM_TOPIC_ID || process.env.TELEGRAM_TOPIC_ANCHOR || 0); // напр.: 5
 
 // ===== CFG / LIMITS =====
 const MIN_PHOTOS = 8;
@@ -138,10 +138,12 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[]) {
 
     const media = group.map((p, i) => {
       const attachName = `photo_${i}`;
-      // File через Blob → не нужен 3-й аргумент filename у FormData.append
-      const blob = new Blob([p.data], { type: p.type || "image/jpeg" });
-      const file = new File([blob], p.name || `p${i}.jpg`, { type: p.type || "image/jpeg" });
-      fd.append(attachName, file); // ← 2 аргумента — ок для undici
+
+      // ⚙️ ВАЖНО: использовать Uint8Array вместо Buffer для совместимости типов
+      const u8 = new Uint8Array(p.data.buffer, p.data.byteOffset, p.data.byteLength);
+      const file = new File([u8], p.name || `p${i}.jpg`, { type: p.type || "image/jpeg" });
+
+      fd.append(attachName, file); // 2 аргумента — корректно для undici
       return { type: "photo" as const, media: `attach://${attachName}` };
     });
 
