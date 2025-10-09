@@ -1,369 +1,415 @@
-// app/page.tsx
-"use client";
+'use client';
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import Image from 'next/image';
+import { useEffect, useState } from 'react';
 
-// Константы (синхронизированы с бэком)
-const MIN_PHOTOS = 8;
-const MAX_PHOTOS = 20;
-const CLIENT_TARGET_MAX_BYTES = 900_000; // ≈ 0.9MB
-const CLIENT_TARGET_MAX_WIDTH = 1600;
-const CLIENT_ALBUM_LIMIT = 10; // Телеграм альбом — до 10
-const CLIENT_GROUP_PAUSE_MS_MIN = 700;
-const CLIENT_GROUP_PAUSE_MS_MAX = 1200;
+type SubmitState = { status: 'idle'|'compressing'|'sending'|'done'|'error'; message?: string };
+type Lang = 'ru' | 'en';
 
-type Direction = "drop" | "hook";
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-function rand(min: number, max: number) {
-  return Math.floor(min + Math.random() * (max - min + 1));
-}
-function makeSessionId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-async function compressImage(file: File): Promise<File> {
-  // Компрессия без сторонних библиотек: createImageBitmap + (Offscreen)Canvas
-  // Целимся в JPEG ≤ 0.9MB, ширина ≤ 1600, до 6 итераций по качеству
-  const bitmap = await createImageBitmap(file).catch(() => null);
-  if (!bitmap) return file;
-
-  const scale = Math.min(1, CLIENT_TARGET_MAX_WIDTH / bitmap.width);
-  const targetW = Math.max(1, Math.floor(bitmap.width * scale));
-  const targetH = Math.max(1, Math.floor(bitmap.height * scale));
-
-  const hasOffscreen = typeof OffscreenCanvas !== "undefined";
-  const canvas: HTMLCanvasElement | OffscreenCanvas = hasOffscreen
-    ? new OffscreenCanvas(targetW, targetH)
-    : Object.assign(document.createElement("canvas"), { width: targetW, height: targetH });
-
-  const ctx: any = (canvas as any).getContext("2d", { alpha: false });
-  if (!ctx) return file;
-
-  (canvas as any).width = targetW;
-  (canvas as any).height = targetH;
-  ctx.drawImage(bitmap, 0, 0, targetW, targetH);
-
-  let quality = 0.78;
-  let blob: Blob | null = await (canvas as any).convertToBlob
-    ? (canvas as any).convertToBlob({ type: "image/jpeg", quality })
-    : new Promise<Blob | null>((resolve) => (canvas as HTMLCanvasElement).toBlob((b) => resolve(b), "image/jpeg", quality));
-
-  for (let i = 0; i < 6 && blob && blob.size > CLIENT_TARGET_MAX_BYTES; i++) {
-    quality = Math.max(0.45, quality * 0.82);
-    blob = await ((canvas as any).convertToBlob
-      ? (canvas as any).convertToBlob({ type: "image/jpeg", quality })
-      : new Promise<Blob | null>((resolve) =>
-          (canvas as HTMLCanvasElement).toBlob((b) => resolve(b), "image/jpeg", quality)
-        ));
+const STR = {
+  ru: {
+    brand: 'US Team Fleet',
+    title: 'Drop / Hook',
+    policy:
+      'Каждый водитель обязан отправлять фото, когда берет (Hook) или оставляет (Drop) трейлер — во избежание штрафов! За невыполнение - штраф $150!',
+    type: 'Тип',
+    hook: 'Hook',
+    drop: 'Drop',
+    truck: 'Truck #',
+    first: 'Имя',
+    last: 'Фамилия',
+    pick: 'Берёт трейлер (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    droptr: 'Trailer dropped (Напишите номер трейлера. Если нет — напишите <b>нет</b>)',
+    notes: 'Примечания',
+    choose10: 'Выберите минимум 10 фото из галереи. Обязательные ракурсы:',
+    chosen: (n:number)=>`Выбрано: ${n} (минимум 10)`,
+    send: 'Отправить',
+    sending: 'Отправка…',
+    done: 'Готово ✔ Письмо отправлено.',
+    needField: (k:string)=>`Заполни поле: ${k}`,
+    must10: (n:number)=>`Мало фото: ${n}. Нужно минимум 10.`,
+    tooBig: 'Суммарный размер фото >24MB. Снимайте меньшим размером.',
+    err: 'Ошибка отправки',
+    angles: [
+      'Номер трейлера',
+      'Все колёса',
+      'Внутрь трейлера',
+      'Углы',
+      'Потолки',
+      'Двери',
+      'Левая сторона снаружи',
+      'Правая сторона снаружи',
+      'Передняя часть снаружи',
+      'Розетки',
+    ],
+    none: 'нет',
+    locBtn: 'Локация',
+    locGetting: 'Получаем…',
+    locOK: 'Локация добавлена',
+    locErr: 'Локация недоступна',
+    locHint: 'Дайте разрешение на локацию',
+  },
+  en: {
+    brand: 'US Team Fleet',
+    title: 'Drop / Hook',
+    policy:
+      'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — in order to avoid charges! For missing report - charge $150!',
+    type: 'Type',
+    hook: 'Hook',
+    drop: 'Drop',
+    truck: 'Truck #',
+    first: 'First name',
+    last: 'Last name',
+    pick: 'Trailer picked (if none — write <b>none</b>)',
+    droptr: 'Trailer dropped (if none — write <b>none</b>)',
+    notes: 'Notes',
+    choose10: 'Select at least 10 photos from gallery. Mandatory angles:',
+    chosen: (n:number)=>`Selected: ${n} (min 10)`,
+    send: 'Send',
+    sending: 'Sending…',
+    done: 'Done ✔ Email sent.',
+    needField: (k:string)=>`Fill the field: ${k}`,
+    must10: (n:number)=>`Too few photos: ${n}. Minimum is 10.`,
+    tooBig: 'Total photo size >24MB. Use smaller images.',
+    err: 'Submit error',
+    angles: [
+      'Trailer number',
+      'All tires',
+      'Inside the trailer',
+      'Corners',
+      'Roof',
+      'Doors',
+      'Left side (outside)',
+      'Right side (outside)',
+      'Front side (outside)',
+      'Sockets',
+    ],
+    none: 'none',
+    locBtn: 'Location',
+    locGetting: 'Getting…',
+    locOK: 'Location attached',
+    locErr: 'Location unavailable',
+    locHint: 'Allow location access',
   }
+} as const;
 
-  if (!blob) return file;
-  // Переименуем под jpg
-  return new File([blob], file.name.replace(/\.[^.]+$/i, ".jpg"), { type: "image/jpeg" });
+/** Усиленный компрессор (~300KB/фото), JPEG */
+async function compressImageAdaptive(
+  file: File,
+  {
+    startMaxDim = 1024,
+    minMaxDim = 640,
+    stepDim = 160,
+    startQ = 0.50,
+    minQ = 0.30,
+    stepQ = 0.05,
+    targetBytes = 300 * 1024,
+  }: Partial<{
+    startMaxDim: number; minMaxDim: number; stepDim: number;
+    startQ: number; minQ: number; stepQ: number; targetBytes: number;
+  }> = {}
+): Promise<File> {
+  const img = document.createElement('img');
+  const url = URL.createObjectURL(file);
+  try {
+    await new Promise<void>((res, rej) => {
+      img.onload = () => res();
+      img.onerror = () => rej(new Error('image load failed'));
+      img.src = url;
+    });
+
+    let attemptMaxDim = startMaxDim;
+    let attemptQ = startQ;
+
+    const render = (maxDim: number, q: number): Promise<Blob> => {
+      let { width, height } = img;
+      if (Math.max(width, height) > maxDim) {
+        if (width >= height) { const k = maxDim / width; width = maxDim; height = Math.round(height * k); }
+        else { const k = maxDim / height; height = maxDim; width = Math.round(width * k); }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, width, height);
+      return new Promise<Blob>((resolve) => {
+        canvas.toBlob(b => resolve(b as Blob), 'image/jpeg', q);
+      });
+    };
+
+    for (let safe = 0; safe < 50; safe++) {
+      const blob = await render(attemptMaxDim, attemptQ);
+      if (blob.size <= targetBytes || (attemptMaxDim <= minMaxDim && attemptQ <= minQ)) {
+        return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+      }
+      if (attemptQ - stepQ >= minQ) {
+        attemptQ = Number((attemptQ - stepQ).toFixed(2));
+      } else if (attemptMaxDim - stepDim >= minMaxDim) {
+        attemptQ = startQ;
+        attemptMaxDim -= stepDim;
+      } else {
+        return new File([blob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+      }
+    }
+    const fallbackBlob = await render(minMaxDim, minQ);
+    return new File([fallbackBlob], (file.name?.replace(/\.[^.]+$/,'') || 'photo') + '.jpg', { type: 'image/jpeg' });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export default function Page() {
-  const [truck, setTruck] = useState("");
-  const [driver, setDriver] = useState("");
-  const [direction, setDirection] = useState<Direction>("drop");
-  const [notes, setNotes] = useState("");
+  const [lang, setLang] = useState<Lang>('ru');
+  const [state, setState] = useState<SubmitState>({ status: 'idle' });
+  const [files, setFiles] = useState<File[]>([]);
+  const [geo, setGeo] = useState<{lat?:number; lon?:number; acc?:number; status:'idle'|'getting'|'ok'|'err'}>({status:'idle'});
 
-  const [photos, setPhotos] = useState<File[]>([]);
-  const [geoAllowed, setGeoAllowed] = useState<"granted" | "denied" | "prompt" | "unknown">("unknown");
-  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
+  useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
 
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<{ step: "idle" | "init" | "compress" | "upload"; current: number; total: number }>({ step: "idle", current: 0, total: 0 });
-  const [statusMsg, setStatusMsg] = useState<string>("");
+  async function getLocation() {
+    if (!navigator.geolocation) { setGeo(g=>({...g,status:'err'})); return; }
+    setGeo(g=>({...g,status:'getting'}));
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
+      },
+      _err => setGeo(g=>({...g,status:'err'})),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }
 
-  const sessionIdRef = useRef<string>(makeSessionId());
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const t = STR[lang];
+    const form = e.currentTarget;
+    const fd = new FormData(form);
 
-  // Узнаём статус разрешения на гео
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      if ("permissions" in navigator && (navigator.permissions as any).query) {
-        try {
-          const st = await (navigator.permissions as any).query({ name: "geolocation" as PermissionName });
-          if (!cancelled) setGeoAllowed(st.state as any);
-          st.onchange = () => setGeoAllowed((st.state as any) || "unknown");
-        } catch {
-          setGeoAllowed("unknown");
-        }
-      } else {
-        setGeoAllowed("unknown");
-      }
+    const required = ['event_type','truck_number','driver_first','driver_last'];
+    for (const k of required) {
+      if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
-    check();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
-  const requiredFilled = useMemo(() => {
-    return truck.trim() && driver.trim() && direction && photos.length >= MIN_PHOTOS && photos.length <= MAX_PHOTOS;
-  }, [truck, driver, direction, photos.length]);
+    if (files.length < 8) { setState({status:'error', message:t.must10(files.length)}); return; }
+    if (files.length > 13) {
+      setState({status:'error', message: lang==='ru'
+        ? `Слишком много фото: ${files.length}. Максимум 13.`
+        : `Too many photos: ${files.length}. Max is 13.`});
+      return;
+    }
 
-  const canSubmit = requiredFilled && coords && geoAllowed !== "denied" && !busy;
+    // Требуем локацию (без жёсткого алерта)
+    if (geo.status !== 'ok' || typeof geo.lat !== 'number' || typeof geo.lon !== 'number') {
+      // просто ничего не делаем — кнопка и так disabled; мягкая подсказка уже показана
+      return;
+    }
 
-  async function requestLocation() {
-    setStatusMsg("Запрашиваем геолокацию…");
-    return new Promise<void>((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-          setGeoAllowed("granted");
-          setStatusMsg("Геолокация получена.");
-          resolve();
-        },
-        (err) => {
-          console.error(err);
-          setGeoAllowed("denied");
-          setStatusMsg("Геолокация отклонена. Разрешите доступ в браузере.");
-          resolve();
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
-    });
-  }
-
-  function onFilesPicked(list: FileList | null) {
-    const arr = list ? Array.from(list) : [];
-    const imgs = arr.filter((f) => /^image\//.test(f.type));
-    const limited = imgs.slice(0, MAX_PHOTOS); // жёсткий потолок
-    setPhotos(limited);
-  }
-
-  async function handleSubmit() {
-    if (!canSubmit || !coords) return;
-    setBusy(true);
-    setStatusMsg("");
     try {
-      // Шаг 1: INIT
-      setProgress({ step: "init", current: 0, total: 1 });
-      const initRes = await fetch("/api/submit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          phase: "init",
-          sessionId: sessionIdRef.current,
-          truck: truck.trim(),
-          driver: driver.trim(),
-          direction,
-          coords,
-          notes: notes?.trim() || undefined,
-        }),
-      }).then((r) => r.json());
-
-      if (!initRes?.ok) {
-        throw new Error(initRes?.error || "INIT failed");
+      setState({status:'compressing', message: lang==='ru' ? 'Сжатие фото…' : 'Compressing photos…'});
+      const compressed: File[] = [];
+      for (const f of files) {
+        if (!f.type.startsWith('image/')) continue;
+        compressed.push(
+          await compressImageAdaptive(f, {
+            startMaxDim: 1024, minMaxDim: 640, stepDim: 160,
+            startQ: 0.50, minQ: 0.30, stepQ: 0.05,
+            targetBytes: 300 * 1024,
+          })
+        );
       }
 
-      // Шаг 2: агрессивная компрессия (off-thread canvas if possible)
-      setProgress({ step: "compress", current: 0, total: photos.length });
-      const processed: File[] = [];
-      for (let i = 0; i < photos.length; i++) {
-        const f = photos[i];
-        const cf = await compressImage(f).catch(() => f);
-        processed.push(cf);
-        setProgress((p) => ({ ...p, current: i + 1 }));
-        // маленькая пауза чтобы UI не «зависал»
-        await sleep(10);
-      }
+      const payload = new FormData();
+      payload.set('lang', lang);
+      payload.set('event_type', String(fd.get('event_type')));
+      payload.set('truck_number', String(fd.get('truck_number')));
+      payload.set('driver_first', String(fd.get('driver_first')));
+      payload.set('driver_last', String(fd.get('driver_last')));
+      payload.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
+      payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
+      payload.set('notes', String(fd.get('notes') || ''));
 
-      // Шаг 3: отправка партиями по 8–10 с паузами
-      const chunks: File[][] = [];
-      for (let i = 0; i < processed.length; i += CLIENT_ALBUM_LIMIT) {
-        chunks.push(processed.slice(i, i + CLIENT_ALBUM_LIMIT));
-      }
+      // локация обязательна
+      payload.set('geo_lat', String(geo.lat));
+      payload.set('geo_lon', String(geo.lon));
+      if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
 
-      let uploaded = 0;
-      setProgress({ step: "upload", current: 0, total: processed.length });
+      compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
 
-      for (let i = 0; i < chunks.length; i++) {
-        const group = chunks[i];
-        const fd = new FormData();
-        fd.set("phase", "photos");
-        fd.set("sessionId", sessionIdRef.current);
-        if (coords) {
-          fd.set("lat", String(coords.lat));
-          fd.set("lng", String(coords.lng));
-        }
-        group.forEach((file, j) => {
-          fd.append("photos", file, file.name || `p${i}_${j}.jpg`);
-        });
+      setState({status:'sending', message:t.sending});
+      const resp = await fetch('/api/submit', { method: 'POST', body: payload });
+      if (!resp.ok) throw new Error(await resp.text());
 
-        const resp = await fetch("/api/submit", { method: "POST", body: fd });
-        const json = await resp.json().catch(() => ({}));
-        if (!resp.ok || !json?.ok) {
-          throw new Error(json?.error || `upload group ${i + 1} failed`);
-        }
-
-        uploaded += group.length;
-        setProgress({ step: "upload", current: uploaded, total: processed.length });
-
-        // Пауза между группами, чтобы «размазать» и не ловить 429
-        if (i < chunks.length - 1) {
-          await sleep(rand(CLIENT_GROUP_PAUSE_MS_MIN, CLIENT_GROUP_PAUSE_MS_MAX));
-        }
-      }
-
-      setStatusMsg("Готово: отправлено!");
-      // Сброс на новую сессию (по желанию)
-      sessionIdRef.current = makeSessionId();
-      // setPhotos([]); setTruck(""); setDriver(""); setNotes("");
-    } catch (e: any) {
-      console.error(e);
-      setStatusMsg(`Ошибка: ${e?.message || e}`);
-    } finally {
-      setBusy(false);
-      setProgress({ step: "idle", current: 0, total: 0 });
+      setState({status:'done', message:t.done});
+      form.reset(); setFiles([]);
+    } catch (err:any) {
+      setState({status:'error', message: err?.message || STR[lang].err});
     }
   }
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const list = e.target.files ? Array.from(e.target.files) : [];
+    setFiles(list);
+    if (list.length < 8) setState({status:'error', message:STR[lang].must10(list.length)});
+    else if (list.length > 13) setState({status:'error', message: lang==='ru'
+      ? `Слишком много фото: ${list.length}. Максимум 13.`
+      : `Too many photos: ${list.length}. Max is 13.`});
+    else setState({status:'idle', message: undefined});
+  }
+
+  const t = STR[lang];
+  const submitBlocked = state.status==='sending' || state.status==='compressing' || geo.status!=='ok';
 
   return (
-    <main className="mx-auto max-w-2xl p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Drop/Hook Report</h1>
+    <div className="container">
+      <div className="card">
+        <div className="logo" style={{justifyContent:'space-between', alignItems:'center'}}>
+          <div style={{display:'flex', alignItems:'center', gap:12}}>
+            <Image src="/logo.png" alt="US Team Fleet" width={40} height={40} priority />
+            <div className="brand">{t.brand}</div>
+          </div>
+          <div className="lang-toggle" role="group" aria-label="Language">
+            <button type="button" className={`seg ${lang==='ru' ? 'active' : ''}`} onClick={() => setLang('ru')} aria-pressed={lang==='ru'}>RU</button>
+            <button type="button" className={`seg ${lang==='en' ? 'active' : ''}`} onClick={() => setLang('en')} aria-pressed={lang==='en'}>EN</button>
+          </div>
+        </div>
 
-      {/* Гео-блок */}
-      <div className="p-4 rounded-xl border">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="font-medium">Геолокация</div>
-            <div className="text-sm opacity-80">
-              {coords
-                ? `Получена: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`
-                : geoAllowed === "denied"
-                ? "Доступ к геолокации запрещён — разрешите в настройках браузера."
-                : "Требуется разрешение на геолокацию перед отправкой."}
+        <h1 className="title">{t.title}</h1>
+        <p className="lead">{t.policy}</p>
+
+        <form onSubmit={onSubmit}>
+          <div className="form-grid">
+            <div className="field">
+              <label>{t.type}</label>
+              <select name="event_type" required defaultValue="Hook">
+                <option value="Hook">{t.hook}</option>
+                <option value="Drop">{t.drop}</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <label>{t.truck}</label>
+              <input type="text" name="truck_number" inputMode="numeric" />
+            </div>
+
+            <div className="field">
+              <label>{t.first}</label>
+              <input type="text" name="driver_first" />
+            </div>
+
+            <div className="field">
+              <label>{t.last}</label>
+              <input type="text" name="driver_last" />
+            </div>
+
+            <div className="field">
+              <label dangerouslySetInnerHTML={{__html:t.pick}} />
+              <input type="text" name="trailer_pick" />
+            </div>
+
+            <div className="field">
+              <label dangerouslySetInnerHTML={{__html:t.droptr}} />
+              <input type="text" name="trailer_drop" />
+            </div>
+
+            <div className="field field--full">
+              <label>{t.notes}</label>
+              <textarea name="notes"></textarea>
+            </div>
+
+            {/* Локация — обязательна, без красных ошибок */}
+            <div className="field field--full">
+              <label>{t.locBtn}</label>
+              <div style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
+                <button
+                  type="button"
+                  className={`loc-btn ${geo.status==='ok' ? 'ok' : ''}`}
+                  onClick={getLocation}
+                  disabled={geo.status==='getting'}
+                >
+                  {geo.status==='getting' ? (lang==='ru'?t.locGetting:t.locGetting) : t.locBtn}
+                </button>
+                {geo.status==='ok' && (
+                  <span className="hint">
+                    📍 {geo.lat?.toFixed(5)}, {geo.lon?.toFixed(5)} {geo.acc ? `(~${Math.round(geo.acc)}m)` : ''} — {lang==='ru'? t.locOK : t.locOK}
+                  </span>
+                )}
+                {geo.status!=='ok' && (
+                  <span className="soft-hint">{t.locHint}</span>
+                )}
+              </div>
             </div>
           </div>
+
+          <div className="photos">
+            <div className="photos-note">{t.choose10}</div>
+            <ul className="angles">
+              {t.angles.map((txt, i)=>(<li key={i}>{i+1}. {txt}</li>))}
+            </ul>
+
+            <div className="picker">
+              <input type="file" accept="image/*" multiple onChange={onPick} aria-label="Select photos (8–13)" />
+              <div className="hint">{t.chosen(files.length)}</div>
+            </div>
+          </div>
+
           <button
-            className="px-3 py-2 rounded-lg border hover:bg-gray-50 disabled:opacity-50"
-            onClick={requestLocation}
-            disabled={busy}
-            aria-live="polite"
+            className="btn-primary btn-full"
+            type="submit"
+            disabled={submitBlocked}
+            style={state.status==='done' ? { background:'#18b663', cursor:'default' } : undefined}
+            aria-disabled={submitBlocked}
           >
-            Разрешить гео
+            {state.status==='sending'
+              ? t.sending
+              : state.status==='done'
+                ? (lang==='ru' ? 'Отправлено' : 'Sent')
+                : t.send}
           </button>
+        </form>
+
+        {state.status==='done' && <p className="success">{t.done}</p>}
+        {state.status==='error' && <p className="error">{state.message}</p>}
+
+        <div className="footer">
+          <em>“It's our duty to lead people to the light”</em><br/>— D. Miller
         </div>
       </div>
 
-      {/* Форма */}
-      <div className="p-4 rounded-xl border space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <label className="block">
-            <span className="text-sm">Truck *</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              value={truck}
-              onChange={(e) => setTruck(e.target.value)}
-              aria-required="true"
-              aria-invalid={!truck ? "true" : "false"}
-            />
-          </label>
-          <label className="block">
-            <span className="text-sm">Driver *</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              value={driver}
-              onChange={(e) => setDriver(e.target.value)}
-              aria-required="true"
-              aria-invalid={!driver ? "true" : "false"}
-            />
-          </label>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <label className="block">
-            <span className="text-sm">Тип *</span>
-            <select
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              value={direction}
-              onChange={(e) => setDirection(e.target.value as Direction)}
-              aria-required="true"
-            >
-              <option value="drop">Drop</option>
-              <option value="hook">Hook</option>
-            </select>
-          </label>
-
-          <label className="block">
-            <span className="text-sm">Примечания (опционально)</span>
-            <input
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
-          </label>
-        </div>
-
-        <label className="block">
-          <span className="text-sm">
-            Фото * (минимум {MIN_PHOTOS}, максимум {MAX_PHOTOS})
-          </span>
-          <input
-            className="mt-1 w-full"
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={(e) => onFilesPicked(e.target.files)}
-            aria-required="true"
-          />
-          <div className="text-sm opacity-80 mt-1">
-            Выбрано: {photos.length} {photos.length < MIN_PHOTOS || photos.length > MAX_PHOTOS ? "❗" : "✅"}
-          </div>
-        </label>
-
-        {/* Кнопка сабмита */}
-        <div className="pt-2 flex items-center gap-3">
-          <button
-            className="px-4 py-2 rounded-lg bg-black text-white disabled:opacity-50"
-            disabled={!canSubmit}
-            onClick={handleSubmit}
-            aria-disabled={!canSubmit}
-          >
-            Отправить
-          </button>
-          <span className="text-sm opacity-80">
-            {(!coords || geoAllowed === "denied") && "Нужно разрешить геолокацию. "}
-            {(!requiredFilled) && "Заполните обязательные поля и выберите 8–20 фото."}
-          </span>
-        </div>
-
-        {/* Прогресс */}
-        {progress.step !== "idle" && (
-          <div className="mt-3 space-y-1" aria-live="polite">
-            <div className="text-sm font-medium">
-              {progress.step === "init" && "Инициализация…"}
-              {progress.step === "compress" && `Сжатие фото: ${progress.current}/${progress.total}`}
-              {progress.step === "upload" && `Отправка: ${progress.current}/${progress.total}`}
-            </div>
-            <div className="w-full h-2 rounded bg-gray-200 overflow-hidden">
-              <div
-                className="h-2 bg-black transition-all"
-                style={{
-                  width:
-                    progress.total > 0
-                      ? `${Math.round((progress.current / progress.total) * 100)}%`
-                      : "10%",
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Статус/ошибки */}
-        {statusMsg && <div className="text-sm mt-2" role="status" aria-live="assertive">{statusMsg}</div>}
-      </div>
-
-      <div className="text-xs opacity-60">
-        Кнопка «Отправить» активируется только когда: гео разрешено и получено, обязательные поля заполнены,
-        выбрано 8–20 фото. Компрессия происходит на устройстве, затем фото уходят партиями с паузами.
-      </div>
-    </main>
+      {/* Минимальный Apple-style для кнопки локации + мягкая подсказка */}
+      <style jsx global>{`
+        .loc-btn{
+          -webkit-tap-highlight-color: transparent;
+          appearance: none;
+          border: 0;
+          outline: none;
+          padding: 10px 16px;
+          border-radius: 9999px;
+          background: linear-gradient(180deg, #ffffff, #f4f4f6);
+          box-shadow:
+            0 1px 0 rgba(0,0,0,0.06),
+            inset 0 0 0 0.5px rgba(0,0,0,0.08);
+          color: #111;
+          font-weight: 600;
+          font-size: 14px;
+          letter-spacing: .2px;
+          transition: transform .06s ease, box-shadow .2s ease, background .2s ease;
+        }
+        .loc-btn:hover{ box-shadow:
+            0 2px 6px rgba(0,0,0,0.08),
+            inset 0 0 0 0.5px rgba(0,0,0,0.10); }
+        .loc-btn:active{ transform: translateY(1px); }
+        .loc-btn.ok{
+          background: linear-gradient(180deg, #e9f9ef, #d9f3e5);
+          box-shadow:
+            0 1px 0 rgba(0,0,0,0.05),
+            inset 0 0 0 0.5px rgba(24,182,99,0.55);
+          color: #127a45;
+        }
+        .soft-hint{
+          color: #6b7280; /* gray-500 */
+          font-size: 13px;
+        }
+      `}</style>
+    </div>
   );
 }
