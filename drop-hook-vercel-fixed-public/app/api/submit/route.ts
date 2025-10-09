@@ -13,18 +13,13 @@ const YARD_CENTER = {
 const YARD_RADIUS_M = Number(process.env.YARD_RADIUS_M || 500);
 const OVERRIDE_PIN = process.env.DISPATCH_OVERRIDE_PIN || "";
 
-// ====== LIMITS (ЖБ) ======
+// ====== LIMITS ======
 const MIN_PHOTOS = 8;
 const MAX_PHOTOS = 20;
-
-// Максимально жёсткая компрессия, чтобы Telegram не ругался
-const TARGET_MAX_BYTES = 800_000;      // ~0.8 MB на фото
-const TARGET_MAX_WIDTH = 1400;         // ширина до 1400px
-// Группа не больше 10 фоток, но ещё и общий вес контролим (безопаснее < ~7.5MB)
+const TARGET_MAX_BYTES = 800_000; // ~0.8MB
+const TARGET_MAX_WIDTH = 1400;
 const TG_ALBUM_LIMIT = 10;
 const MAX_CHUNK_TOTAL = 7_500_000;
-
-// Паузы и ретраи против 429 (и чтобы «размазать» трафик)
 const GROUP_PAUSE_MS_MIN = 1000;
 const GROUP_PAUSE_MS_MAX = 1600;
 const MAX_TG_RETRIES = 8;
@@ -43,46 +38,36 @@ function inYard(coords?: { lat: number; lng: number }) {
   if (!coords) return false;
   return meters(coords, YARD_CENTER) <= YARD_RADIUS_M;
 }
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-function rand(min: number, max: number) {
-  return Math.floor(min + Math.random() * (max - min + 1));
-}
-function escapeHtml(s: string) {
-  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
+function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+function rand(min: number, max: number) { return Math.floor(min + Math.random() * (max - min + 1)); }
+function escapeHtml(s: string) { return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
+function asBlobPart(buf: Buffer): Uint8Array { return new Uint8Array(buf); } // TS-совместимый BlobPart
 
-// ====== optional sharp (агрессивно, но бесплатный пакет) ======
+// ====== optional sharp (НЕ ломает билд, если не установлен) ======
 let sharpAvailable = false;
 let sharp: any = null;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  sharp = require("sharp");
-  sharpAvailable = typeof sharp === "function";
+  // ВАЖНО: eval('require') — чтобы бандлер Next/Vercel не пытался резолвить 'sharp'
+  // и не падал, даже если зависимости нет.
+  // eslint-disable-next-line no-eval
+  const req: any = (globalThis as any).require || eval("require");
+  sharp = req?.("sharp");
+  sharpAvailable = !!sharp;
 } catch {
   sharpAvailable = false;
 }
 
-// СУПЕР-компрессор: прогрессивный JPEG + mozjpeg, до 8 итераций, минималка до ~35 качества.
+// Суперагрессивная компрессия JPEG (progressive+mozjpeg), до 8 итераций
 async function recompressIfNeeded(buf: Buffer, mime: string): Promise<{ data: Buffer; type: string }> {
   if (!sharpAvailable) return { data: buf, type: mime || "image/jpeg" };
-
   try {
     let quality = 68;
-    let out = await sharp(buf)
-      .rotate()
-      .resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
-      .jpeg({ quality, progressive: true, mozjpeg: true })
-      .toBuffer();
-
+    let out = await sharp(buf).rotate().resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
+      .jpeg({ quality, progressive: true, mozjpeg: true }).toBuffer();
     for (let i = 0; i < 8 && out.length > TARGET_MAX_BYTES; i++) {
       quality = Math.max(35, Math.floor(quality * 0.82));
-      out = await sharp(buf)
-        .rotate()
-        .resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
-        .jpeg({ quality, progressive: true, mozjpeg: true })
-        .toBuffer();
+      out = await sharp(buf).rotate().resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
+        .jpeg({ quality, progressive: true, mozjpeg: true }).toBuffer();
     }
     return { data: out, type: "image/jpeg" };
   } catch {
@@ -96,28 +81,21 @@ async function tgFetch(method: string, body: FormData | URLSearchParams, attempt
 
   if (res.ok) return res.json();
 
-  // Попробуем вытащить json (для retry_after и сообщений)
   let j: any = null;
-  try {
-    j = await res.json();
-  } catch {
-    // ignore
-  }
+  try { j = await res.json(); } catch {}
 
-  // 429 Too Many Requests — уважаем retry_after, если дан
   if (res.status === 429 && j?.parameters?.retry_after) {
     const waitSec = Math.max(1, Number(j.parameters.retry_after));
     await sleep(waitSec * 1000 + rand(200, 700));
     if (attempt < MAX_TG_RETRIES) return tgFetch(method, body, attempt + 1);
   }
 
-  // Некоторые 400 бывают из-за «слишком частых альбомов» — дадим паузу и повторим
-  const text = typeof j === "object" ? JSON.stringify(j) : await res.text().catch(() => "");
   if (attempt < MAX_TG_RETRIES && (res.status === 400 || res.status === 500 || res.status === 502 || res.status === 503)) {
     await sleep(rand(600, 1400) + attempt * 150);
     return tgFetch(method, body, attempt + 1);
   }
 
+  const text = j ? JSON.stringify(j) : await res.text().catch(() => "");
   throw new Error(`TG ${method} ${res.status}: ${text || "error"}`);
 }
 
@@ -131,12 +109,10 @@ async function sendText(text: string) {
 
 type InputPhoto = { name: string; type: string; data: Buffer };
 
-// Режем на группы с ограничением и по количеству, и по общему размеру
 function chunkPhotosFixed(photos: InputPhoto[], maxCount: number, maxBytes: number): InputPhoto[][] {
   const chunks: InputPhoto[][] = [];
   let group: InputPhoto[] = [];
   let total = 0;
-
   for (const p of photos) {
     const size = p.data.length;
     if (group.length >= maxCount || total + size > maxBytes) {
@@ -151,22 +127,23 @@ function chunkPhotosFixed(photos: InputPhoto[], maxCount: number, maxBytes: numb
   return chunks;
 }
 
-// Адаптивная отправка альбомов: при ошибке «слишком часто/большая группа» уменьшаем размер группы и повторяем
 async function sendMediaGroupAdaptive(photos: InputPhoto[], caption?: string) {
-  let groupLimit = TG_ALBUM_LIMIT;            // стартуем с 10
-  let sizeLimit = MAX_CHUNK_TOTAL;            // ~7.5MB на группу
-
+  let groupLimit = TG_ALBUM_LIMIT;
+  let sizeLimit = MAX_CHUNK_TOTAL;
   let index = 0;
+
   while (index < photos.length) {
     const rest = photos.slice(index);
-    let groups = chunkPhotosFixed(rest, groupLimit, sizeLimit);
+    const groups = chunkPhotosFixed(rest, groupLimit, sizeLimit);
     if (!groups.length) throw new Error("internal chunking error");
 
     const group = groups[0];
     const fd = new FormData();
     const media = group.map((p, i) => {
       const attachName = `photo_${i}`;
-      fd.append(attachName, new Blob([p.data], { type: p.type || "image/jpeg" }), p.name || `p${i}.jpg`);
+      // ВАЖНО: используем Uint8Array вместо Buffer → TS ок; Node Blob понимает
+      const blob = new Blob([asBlobPart(p.data)], { type: p.type || "image/jpeg" });
+      fd.append(attachName, blob, p.name || `p${i}.jpg`);
       return {
         type: "photo",
         media: `attach://${attachName}`,
@@ -180,23 +157,14 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[], caption?: string) {
     try {
       await tgFetch("sendMediaGroup", fd);
       index += group.length;
-      // Пауза между группами — обязательна, чтобы не ловить 429
       if (index < photos.length) await sleep(rand(GROUP_PAUSE_MS_MIN, GROUP_PAUSE_MS_MAX));
     } catch (e: any) {
       const msg = String(e?.message || "");
-      // Если похоже на «слишком часто»/нагрузку — уменьшаем группу и/или лимит размера и пробуем снова
       if (/429|Too Many Requests|retry_after|Too Many|flood/i.test(msg) || /Bad Request/i.test(msg)) {
-        // уменьшаем сначала количество, потом размер
-        if (groupLimit > 5) {
-          groupLimit = Math.max(5, groupLimit - 2);
-        } else if (sizeLimit > 5_000_000) {
-          sizeLimit = Math.max(5_000_000, sizeLimit - 1_000_000);
-        } else {
-          // последний шанс — подождать подольше
-          await sleep(rand(1500, 2500));
-        }
-        // и повторим без продвижения индекса
-        continue;
+        if (groupLimit > 5) groupLimit = Math.max(5, groupLimit - 2);
+        else if (sizeLimit > 5_000_000) sizeLimit = Math.max(5_000_000, sizeLimit - 1_000_000);
+        else await sleep(rand(1500, 2500));
+        continue; // повтор без увеличения index
       }
       throw e;
     }
