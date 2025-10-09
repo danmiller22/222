@@ -31,6 +31,10 @@ function fmtLocal(dt: Date) {
   }).format(dt);
   return `${d} ${TZ}`;
 }
+function toArrayBufferExact(buf: Buffer): ArrayBuffer {
+  // Гарантированно ArrayBuffer (не ArrayBufferLike)
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
 
 // ===== optional sharp (если нет — всё равно работает) =====
 let sharpAvailable = false;
@@ -139,11 +143,12 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[]) {
     const media = group.map((p, i) => {
       const attachName = `photo_${i}`;
 
-      // ⚙️ ВАЖНО: использовать Uint8Array вместо Buffer для совместимости типов
-      const u8 = new Uint8Array(p.data.buffer, p.data.byteOffset, p.data.byteLength);
-      const file = new File([u8], p.name || `p${i}.jpg`, { type: p.type || "image/jpeg" });
+      // ✅ НЕ используем Uint8Array/Buffer как BlobPart напрямую — берём чистый ArrayBuffer
+      const ab = toArrayBufferExact(p.data);
+      const blob = new Blob([ab], { type: p.type || "image/jpeg" });
+      // undici-совместимо: filename не передаём отдельно (append только с 2 аргументами)
+      fd.append(attachName, blob);
 
-      fd.append(attachName, file); // 2 аргумента — корректно для undici
       return { type: "photo" as const, media: `attach://${attachName}` };
     });
 
