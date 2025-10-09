@@ -1,318 +1,233 @@
 // app/api/submit/route.ts
-import { NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
 
-export const runtime = "nodejs";
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-// ====== ENV ======
-const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
-const YARD_CENTER = {
-  lat: Number(process.env.YARD_LAT || 41.4299),
-  lng: Number(process.env.YARD_LNG || -88.2284),
-};
-const YARD_RADIUS_M = Number(process.env.YARD_RADIUS_M || 500);
-const OVERRIDE_PIN = process.env.DISPATCH_OVERRIDE_PIN || "";
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1003162402009';
+const TOPIC_ANCHOR = process.env.TELEGRAM_TOPIC_ANCHOR ? Number(process.env.TELEGRAM_TOPIC_ANCHOR) : undefined;
 
-// ====== limits & pacing ======
-const MIN_PHOTOS = 8;
-const MAX_PHOTOS = 20;
-const TG_ALBUM_LIMIT = 10;
+function envOrThrow(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+const TG_API = () => `https://api.telegram.org/bot${envOrThrow('TELEGRAM_BOT_TOKEN')}`;
 
-// Сильная компрессия (под Telegram):
-// целимся в ~0.9MB и ширину ≤ 1600, прогрессивный JPEG, mozjpeg
-const TARGET_MAX_BYTES = 900_000;
-const TARGET_MAX_WIDTH = 1600;
+// ----------- Yard coords (Channahon yard) -----------
+const YARD = { lat: 41.444219, lon: -88.194936 }; // 27665 S Frontage Rd E, Channahon, IL 60410 (округлённые)
+const YARD_RADIUS_M = 70;  // радиус ярда 70 метров
+const YARD_FIXED_ACC_M = 10; // погрешность показываем как ±10 м
 
-// Безопасный общий размер одной отправляемой группы (< ~8MB)
-const MAX_CHUNK_TOTAL = 8_000_000;
-
-// Пауза между группами для снятия 429 (серверная, чтобы даже при «нетерпеливом» фронте не спамить)
-const GROUP_PAUSE_MS_MIN = 900;
-const GROUP_PAUSE_MS_MAX = 1400;
-
-// ====== utils ======
-function meters(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
-  const R = 6371000;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const s1 = Math.sin(dLat / 2);
-  const s2 = Math.sin(dLng / 2);
-  const c1 = Math.cos((a.lat * Math.PI) / 180);
-  const c2 = Math.cos((b.lng * Math.PI) / 180); // исправлено: cos по долготе
-  const h = s1 * s1 + Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * s2 * s2;
+// Haversine (метры)
+function metersBetween(a:{lat:number;lon:number}, b:{lat:number;lon:number}) {
+  const R = 6371000; // радиус Земли в метрах
+  const toRad = (x:number)=>x*Math.PI/180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const la1 = toRad(a.lat);
+  const la2 = toRad(b.lat);
+  const h = Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
-function inYard(coords?: { lat: number; lng: number }) {
-  if (!coords) return false;
-  return meters(coords, YARD_CENTER) <= YARD_RADIUS_M;
-}
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-function rand(min: number, max: number) {
-  return Math.floor(min + Math.random() * (max - min + 1));
-}
-function escapeHtml(s: string) {
-  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
 
-// ====== optional sharp (free) ======
-let sharpAvailable = false;
-let sharp: any = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  sharp = require("sharp");
-  sharpAvailable = typeof sharp === "function";
-} catch {
-  sharpAvailable = false;
-}
+// ---------- anti-429 / retry ----------
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+const jitter = (ms: number) => ms + Math.floor(Math.random() * 400);
 
-// СУПЕР-компрессор: агрессивное сжатие до цели, до 6 итераций,
-// прогрессивный JPEG + mozjpeg, maxWidth=1600.
-async function recompressIfNeeded(buf: Buffer, mime: string): Promise<{ data: Buffer; type: string }> {
-  if (!sharpAvailable) return { data: buf, type: mime || "image/jpeg" };
+async function fetchTG(path: string, init: RequestInit, tries = 6): Promise<Response> {
+  let delay = 1200;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const res = await fetch(`${TG_API()}${path}`, init);
+    if (res.ok) return res;
 
-  try {
-    let quality = 70;
-    let out = await sharp(buf)
-      .rotate()
-      .resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
-      .jpeg({ quality, progressive: true, mozjpeg: true })
-      .toBuffer();
-
-    // если крупное — ужимаем до 6 циклов
-    for (let i = 0; i < 6 && out.length > TARGET_MAX_BYTES; i++) {
-      quality = Math.max(42, Math.floor(quality * 0.82));
-      out = await sharp(buf)
-        .rotate()
-        .resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
-        .jpeg({ quality, progressive: true, mozjpeg: true })
-        .toBuffer();
+    if (res.status === 429) {
+      let wait = 3000;
+      try {
+        const b = await res.clone().json();
+        if (b?.parameters?.retry_after) wait = (Number(b.parameters.retry_after) + 1) * 1000;
+      } catch {}
+      await sleep(jitter(wait));
+      continue;
     }
-    return { data: out, type: "image/jpeg" };
-  } catch {
-    // если компрессор не справился — отдаём оригинал
-    return { data: buf, type: mime || "image/jpeg" };
-  }
-}
-
-async function tgFetch(method: string, body: FormData | URLSearchParams, attempt = 0): Promise<any> {
-  const url = `https://api.telegram.org/bot${TG_TOKEN}/${method}`;
-  const res = await fetch(url, { method: "POST", body });
-
-  if (res.ok) return res.json();
-
-  let j: any = null;
-  try {
-    j = await res.json();
-  } catch {
-    // ignore
-  }
-
-  // 429: уважаем retry_after
-  if (res.status === 429 && j?.parameters?.retry_after) {
-    const waitSec = Math.max(1, Number(j.parameters.retry_after));
-    await sleep(waitSec * 1000 + rand(200, 600));
-    return tgFetch(method, body, attempt + 1);
-  }
-
-  // Экспоненциальный бэкофф для прочего
-  if (attempt < 5) {
-    const backoff = Math.min(7000, 400 * Math.pow(1.9, attempt)) + rand(120, 320);
-    await sleep(backoff);
-    return tgFetch(method, body, attempt + 1);
-  }
-
-  const text = j ? JSON.stringify(j) : await res.text().catch(() => "");
-  throw new Error(`TG ${method} ${res.status}: ${text}`);
-}
-
-async function sendText(text: string) {
-  const body = new URLSearchParams();
-  body.set("chat_id", TG_CHAT_ID);
-  body.set("text", text);
-  body.set("parse_mode", "HTML");
-  return tgFetch("sendMessage", body);
-}
-
-type InputPhoto = { name: string; type: string; data: Buffer };
-
-function chunkPhotos(photos: InputPhoto[]): InputPhoto[][] {
-  const chunks: InputPhoto[][] = [];
-  let group: InputPhoto[] = [];
-  let total = 0;
-
-  for (const p of photos) {
-    const size = p.data.length;
-    // ограничиваем и по количеству, и по суммарному размеру
-    if (group.length >= TG_ALBUM_LIMIT || total + size > MAX_CHUNK_TOTAL) {
-      if (group.length) chunks.push(group);
-      group = [];
-      total = 0;
+    if (res.status >= 500 && res.status < 600) {
+      await sleep(jitter(delay));
+      delay *= 2;
+      continue;
     }
-    group.push(p);
-    total += size;
+    throw new Error(`Telegram ${path} failed: ${res.status} ${await res.text()}`);
   }
-  if (group.length) chunks.push(group);
-  return chunks;
+  throw new Error(`Telegram ${path} failed after ${tries} retries`);
 }
 
-async function sendMediaGroup(photos: InputPhoto[], caption?: string) {
-  const chunks = chunkPhotos(photos);
+// ---------- send helpers ----------
+async function sendMessage(text: string, replyTo?: number) {
+  const body: any = {
+    chat_id: CHAT_ID,
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  };
+  if (replyTo) {
+    body.reply_to_message_id = replyTo;
+    body.allow_sending_without_reply = true;
+  }
 
-  for (let idx = 0; idx < chunks.length; idx++) {
-    const chunk = chunks[idx];
+  await fetchTG('/sendMessage', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await sleep(900);
+}
+
+type InputMediaPhoto = { type: 'photo'; media: string };
+const chunk = <T,>(a:T[], n:number)=>{ const r:T[][]=[]; for(let i=0;i<a.length;i+=n) r.push(a.slice(i,i+n)); return r; };
+
+async function sendMediaGroupFiles(files: File[], replyTo?: number) {
+  const groups = chunk(files, 10);
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
     const fd = new FormData();
-    const media = chunk.map((p, i) => {
-      const attachName = `photo_${i}`;
-      fd.append(attachName, new Blob([p.data], { type: p.type || "image/jpeg" }), p.name || `p${i}.jpg`);
-      return {
-        type: "photo",
-        media: `attach://${attachName}`,
-        caption: idx === 0 && i === 0 && caption ? caption : undefined,
-        parse_mode: "HTML" as const,
-      };
-    });
-
-    fd.set("chat_id", TG_CHAT_ID);
-    fd.set("media", JSON.stringify(media));
-
-    await tgFetch("sendMediaGroup", fd);
-
-    // Пауза между группами, чтобы «размазывать» нагрузку на Telegram
-    if (idx < chunks.length - 1) {
-      await sleep(rand(GROUP_PAUSE_MS_MIN, GROUP_PAUSE_MS_MAX));
+    fd.set('chat_id', CHAT_ID);
+    if (replyTo) {
+      fd.set('reply_to_message_id', String(replyTo));
+      fd.set('allow_sending_without_reply', 'true');
     }
+
+    const media: InputMediaPhoto[] = group.map((_, idx) => {
+      const attachName = `file${idx}`;
+      return { type: 'photo', media: `attach://${attachName}` };
+    });
+    fd.set('media', JSON.stringify(media));
+
+    for (let idx = 0; idx < group.length; idx++) {
+      const f = group[idx];
+      const buf = Buffer.from(await f.arrayBuffer());
+      const filename = f.name?.trim() ? f.name : `photo_${gi + 1}_${idx + 1}.jpg`;
+      fd.append(`file${idx}`, new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
+    }
+
+    await fetchTG('/sendMediaGroup', { method: 'POST', body: fd });
+    if (gi < groups.length - 1) await sleep(1500);
   }
 }
 
-// ====== Типы входа ======
-type InitPayload = {
-  phase: "init";
-  sessionId: string;
-  truck: string;
-  driver: string;
-  direction: "drop" | "hook";
-  coords?: { lat: number; lng: number };
-  notes?: string;
-};
-type PhotosPayload = {
-  phase: "photos";
-  sessionId: string;
-  coords?: { lat: number; lng: number };
-};
+async function sendPhotosIndividually(files: File[], replyTo?: number) {
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const fd = new FormData();
+    fd.set('chat_id', CHAT_ID);
+    if (replyTo) {
+      fd.set('reply_to_message_id', String(replyTo));
+      fd.set('allow_sending_without_reply', 'true');
+    }
 
-// ====== Handler ======
+    const buf = Buffer.from(await f.arrayBuffer());
+    const filename = f.name?.trim() ? f.name : `photo_single_${i + 1}.jpg`;
+    fd.append('photo', new Blob([buf], { type: f.type || 'image/jpeg' }), filename);
+
+    await fetchTG('/sendPhoto', { method: 'POST', body: fd });
+    await sleep(1200);
+  }
+}
+
 export async function POST(req: Request) {
   try {
-    const contentType = req.headers.get("content-type") || "";
-    let phase: "init" | "photos";
+    const form = await req.formData();
 
-    if (contentType.includes("multipart/form-data")) {
-      // ---- photos (multipart) ----
-      const form = await req.formData();
-      phase = String(form.get("phase") || "photos") as "photos";
-      if (phase !== "photos") {
-        return NextResponse.json({ ok: false, error: "Multipart поддерживает только phase=photos" }, { status: 400 });
-      }
-      const sessionId = String(form.get("sessionId") || "");
-      if (!sessionId) return NextResponse.json({ ok: false, error: "sessionId required" }, { status: 400 });
+    const lang = (String(form.get('lang') || 'en') === 'ru') ? 'ru' : 'en';
+    const event_type   = String(form.get('event_type') || '');
+    const truck_number = String(form.get('truck_number') || '');
+    const driver_first = String(form.get('driver_first') || '');
+    const driver_last  = String(form.get('driver_last')  || '');
+    const trailer_pick = String(form.get('trailer_pick') || (lang==='ru'?'нет':'none'));
+    const trailer_drop = String(form.get('trailer_drop') || (lang==='ru'?'нет':'none'));
+    const notes        = String(form.get('notes') || '');
 
-      const lat = form.get("lat");
-      const lng = form.get("lng");
-      const coords = lat && lng ? { lat: Number(lat), lng: Number(lng) } : undefined;
-
-      const files = form.getAll("photos");
-      let photos: InputPhoto[] = [];
-      for (const f of files) {
-        if (f instanceof File) {
-          const raw = Buffer.from(await f.arrayBuffer());
-          if (!/^image\//.test(f.type || "image/jpeg")) continue;
-          if (raw.length === 0) continue;
-
-          const { data, type } = await recompressIfNeeded(raw, f.type || "image/jpeg");
-          photos.push({ name: f.name || "photo.jpg", type, data });
-        }
-      }
-
-      if (photos.length < MIN_PHOTOS || photos.length > MAX_PHOTOS) {
-        return NextResponse.json({ ok: false, error: `Нужно ${MIN_PHOTOS}–${MAX_PHOTOS} фото` }, { status: 400 });
-      }
-
-      const yardOk = inYard(coords);
-      const metaBadge = yardOk ? "✅ Внутри ярда" : "⛔️ ВНЕ ярда";
-
-      await sendMediaGroup(photos, `<b>ФОТО (${photos.length})</b>\nСессия: <code>${sessionId}</code>\n${metaBadge}`);
-
-      return NextResponse.json({ ok: true, yardOk });
-    } else {
-      // ---- JSON ----
-      const body = (await req.json().catch(() => ({}))) as Partial<
-        InitPayload &
-          PhotosPayload & {
-            photosBase64?: string[];
-            overridePin?: string;
-          }
-      >;
-
-      if (!body || !body.phase) {
-        return NextResponse.json({ ok: false, error: "phase required" }, { status: 400 });
-      }
-      phase = body.phase;
-
-      if (phase === "init") {
-        const p = body as InitPayload & { overridePin?: string };
-        if (!p.sessionId || !p.truck || !p.driver || !p.direction) {
-          return NextResponse.json({ ok: false, error: "sessionId, truck, driver, direction обязательны" }, { status: 400 });
-        }
-        if (!p.coords) {
-          return NextResponse.json({ ok: false, error: "Требуется геолокация" }, { status: 400 });
-        }
-        const yardOk = inYard(p.coords);
-        if (!yardOk && OVERRIDE_PIN) {
-          const pin = (p as any).overridePin || req.headers.get("x-override-pin") || "";
-          if (pin !== OVERRIDE_PIN) {
-            return NextResponse.json({ ok: false, error: "Вне ярда. Нужен override PIN." }, { status: 403 });
-          }
-        }
-
-        const txt =
-          `<b>INIT</b>\n` +
-          `Сессия: <code>${p.sessionId}</code>\n` +
-          `Truck: <code>${p.truck}</code>\n` +
-          `Driver: <code>${p.driver}</code>\n` +
-          `Type: <code>${p.direction.toUpperCase()}</code>\n` +
-          `Coords: <code>${p.coords.lat.toFixed(6)}, ${p.coords.lng.toFixed(6)}</code>\n` +
-          `${inYard(p.coords) ? "✅ Внутри ярда" : "⛔️ ВНЕ ярда"}` +
-          (p.notes ? `\nNotes: ${escapeHtml(p.notes).slice(0, 500)}` : "");
-
-        await sendText(txt);
-        return NextResponse.json({ ok: true, yardOk });
-      }
-
-      if (phase === "photos") {
-        const base64 = (body as any).photosBase64 as string[] | undefined;
-        if (!base64 || base64.length < MIN_PHOTOS || base64.length > MAX_PHOTOS) {
-          return NextResponse.json({ ok: false, error: `Нужно ${MIN_PHOTOS}–${MAX_PHOTOS} фото (base64)` }, { status: 400 });
-        }
-        const photos: InputPhoto[] = [];
-        for (let i = 0; i < base64.length; i++) {
-          const b64 = base64[i];
-          const m = b64.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-          const mime = m?.[1] || "image/jpeg";
-          const dataStr = m?.[2] || b64;
-          const raw = Buffer.from(dataStr, "base64");
-          const { data, type } = await recompressIfNeeded(raw, mime);
-          photos.push({ name: `p${i}.jpg`, type, data });
-        }
-        await sendMediaGroup(photos, `<b>ФОТО (${photos.length})</b>`);
-        return NextResponse.json({ ok: true });
-      }
-
-      return NextResponse.json({ ok: false, error: "Неизвестная phase" }, { status: 400 });
+    if (!event_type || !truck_number || !driver_first || !driver_last) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
-  } catch (err: any) {
-    console.error("[submit] error:", err);
-    return NextResponse.json({ ok: false, error: err?.message || "internal" }, { status: 500 });
+
+    // Geo (required на фронте, но здесь формируем текст)
+    const geo_lat = form.get('geo_lat') ? Number(form.get('geo_lat')) : undefined;
+    const geo_lon = form.get('geo_lon') ? Number(form.get('geo_lon')) : undefined;
+    // geo_acc нам теперь не нужен для вывода вне ярда
+
+    // Фото 8..13
+    let files = form.getAll('photos') as unknown as File[];
+    if (files.length < 8) {
+      return NextResponse.json({ error: `Too few photos: ${files.length}. Minimum is 8.` }, { status: 400 });
+    }
+    if (files.length > 13) files = files.slice(0, 13);
+
+    // Chicago time + единая текстовая карточка
+    const dt = new Intl.DateTimeFormat(lang==='ru'?'ru-RU':'en-US', {
+      timeZone: 'America/Chicago',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    }).format(new Date());
+    const when = `${dt} America/Chicago`;
+    const fullName = `${driver_first} ${driver_last}`.trim();
+
+    // Линия локации:
+    // - если в пределах 70м от ярда -> "Yard (Channahon) (±15м)" / "(±15m)"
+    // - иначе только точные координаты + ссылка на Google Maps (без погрешности)
+    let locLine = lang==='ru' ? 'Локация: -' : 'Location: -';
+    if (Number.isFinite(geo_lat) && Number.isFinite(geo_lon)) {
+      const here = { lat: geo_lat as number, lon: geo_lon as number };
+      const distM = metersBetween(here, YARD);
+      if (distM <= YARD_RADIUS_M) {
+        const accTxt = lang==='ru' ? ` (±${YARD_FIXED_ACC_M}м)` : ` (±${YARD_FIXED_ACC_M}m)`;
+        locLine = lang==='ru'
+          ? `Локация: Yard (Channahon)${accTxt}`
+          : `Location: Yard (Channahon)${accTxt}`;
+      } else {
+        const mapUrl = `https://maps.google.com/?q=${here.lat.toFixed(6)},${here.lon.toFixed(6)}`;
+        locLine = lang==='ru'
+          ? `Локация: ${here.lat.toFixed(5)}, ${here.lon.toFixed(5)} — ${mapUrl}`
+          : `Location: ${here.lat.toFixed(5)}, ${here.lon.toFixed(5)} — ${mapUrl}`;
+      }
+    }
+
+    const header = (lang === 'ru' ? [
+      `🚚 <b>US Team Fleet — ${event_type}</b>`,
+      `Когда: <code>${when}</code>`,
+      `Truck #: <b>${truck_number}</b>`,
+      `Водитель: <b>${fullName}</b>`,
+      `Взял (Hook): <b>${trailer_pick}</b>`,
+      `Оставил (Drop): <b>${trailer_drop}</b>`,
+      locLine,
+      `Заметки: ${notes || '-'}`,
+      `Фото: ${files.length} шт.`,
+    ] : [
+      `🚚 <b>US Team Fleet — ${event_type}</b>`,
+      `When: <code>${when}</code>`,
+      `Truck #: <b>${truck_number}</b>`,
+      `Driver: <b>${fullName}</b>`,
+      `Trailer picked (Hook): <b>${trailer_pick}</b>`,
+      `Trailer dropped (Drop): <b>${trailer_drop}</b>`,
+      locLine,
+      `Notes: ${notes || '-'}`,
+      `Photos: ${files.length}`,
+    ]).join('\n');
+
+    const replyTo = TOPIC_ANCHOR;
+
+    // 1) одна текстовая карточка
+    await sendMessage(header, replyTo);
+
+    // 2) альбомы; при проблемах — поштучно
+    try {
+      await sendMediaGroupFiles(files, replyTo);
+    } catch {
+      await sendPhotosIndividually(files, replyTo);
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (err:any) {
+    console.error('submit->telegram failed:', err?.message || err);
+    return NextResponse.json({ error: err?.message || 'Submit failed' }, { status: 500 });
   }
 }
