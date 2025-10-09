@@ -19,7 +19,7 @@ const STR = {
     max13:(n:number)=>`Слишком много фото: ${n}. Можно максимум 13.`,
     err:'Ошибка отправки',
     angles:['Номер трейлера','Все колёса','Внутрь трейлера','Углы','Потолки','Двери','Левая сторона снаружи','Правая сторона снаружи','Передняя часть снаружи','Розетки'],
-    none:'нет',needGeo:'Дайте разрешение на геолокацию',ai:'Annual Inspection',reg:'Trailer Registration',yes:'Есть',no:'Нет',
+    none:'нет',needGeo:'Дайте разрешение на геолокацию',
   },
   en:{brand:'US Team Fleet',title:'Drop / Hook',
     policy:'Every driver must submit photos when hooking (Hook) or dropping (Drop) a trailer — to avoid charges!',
@@ -34,11 +34,11 @@ const STR = {
     max13:(n:number)=>`Too many photos: ${n}. Maximum is 13.`,
     err:'Submit error',
     angles:['Trailer number','All tires','Inside the trailer','Corners','Roof','Doors','Left side (outside)','Right side (outside)','Front side (outside)','Sockets'],
-    none:'none',needGeo:'Please allow location access',ai:'Annual Inspection',reg:'Trailer Registration',yes:'Yes',no:'None',
+    none:'none',needGeo:'Please allow location access',
   }
 } as const;
 
-/** Агрессивная компрессия для фото/доков-картинок (~220KB) */
+/** Агрессивная компрессия (~220KB на фото) */
 async function compressImageAdaptive(
   file: File,
   opts = { startMaxDim: 960, minMaxDim: 600, stepDim: 120, startQ: 0.5, minQ: 0.28, stepQ: 0.05, targetBytes: 220*1024 }
@@ -50,12 +50,14 @@ async function compressImageAdaptive(
       let maxDim = startMaxDim, q = startQ;
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { alpha:false }); if(!ctx) return reject('no canvas');
+
       while (true) {
         const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
         canvas.width = Math.max(1, Math.round(img.width*scale));
         canvas.height= Math.max(1, Math.round(img.height*scale));
         ctx.clearRect(0,0,canvas.width,canvas.height);
         ctx.drawImage(img,0,0,canvas.width,canvas.height);
+
         const blob: Blob = await new Promise(res => canvas.toBlob(b=>res(b as Blob),'image/jpeg', q));
         if (blob.size <= targetBytes || (q <= minQ && maxDim <= minMaxDim)) {
           resolve(new File([blob], (file.name||'img')+'.jpg', { type:'image/jpeg' })); return;
@@ -70,17 +72,11 @@ async function compressImageAdaptive(
   });
 }
 
-type DocMode = 'yes'|'none';
-
 export default function Page(){
   const [lang,setLang]=useState<Lang>('ru');
   const [state,setState]=useState<SubmitState>({status:'idle'});
   const [files,setFiles]=useState<File[]>([]);
   const [geo,setGeo]=useState<{lat:number,lon:number}|null>(null);
-  const [annualMode,setAnnualMode]=useState<DocMode>('none');
-  const [regMode,setRegMode]=useState<DocMode>('none');
-  const [annualFile,setAnnualFile]=useState<File|null>(null);
-  const [regFile,setRegFile]=useState<File|null>(null);
 
   useEffect(()=>{ const s=localStorage.getItem('lang') as Lang|null; if(s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang',lang); },[lang]);
@@ -100,15 +96,6 @@ export default function Page(){
     else if(list.length>13) setState({status:'error',message:STR[lang].max13(list.length)});
     else setState({status:'idle'});
     setFiles(list.slice(0,13));
-  }
-
-  async function onDocsPick(e:React.ChangeEvent<HTMLInputElement>, kind:'annual'|'reg'){
-    const f = e.target.files?.[0] || null;
-    if(!f){ kind==='annual'?setAnnualFile(null):setRegFile(null); return; }
-    if(f.type.startsWith('image/')){
-      const comp = await compressImageAdaptive(f, { startMaxDim:1000, minMaxDim:600, stepDim:120, startQ:0.5, minQ:0.28, stepQ:0.05, targetBytes:180*1024 });
-      kind==='annual'?setAnnualFile(comp):setRegFile(comp);
-    } else { kind==='annual'?setAnnualFile(f):setRegFile(f); }
   }
 
   async function onSubmit(e:React.FormEvent<HTMLFormElement>){
@@ -140,7 +127,6 @@ export default function Page(){
       init.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
       init.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
       init.set('geo_lat', String(geo.lat)); init.set('geo_lon', String(geo.lon));
-      init.set('annual_mode', annualMode); init.set('reg_mode', regMode);
 
       const r1 = await fetch('/api/submit', { method:'POST', body:init });
       if(!r1.ok) throw new Error(await r1.text());
@@ -155,15 +141,6 @@ export default function Page(){
         const rp = await fetch('/api/submit', { method:'POST', body: pf });
         if(!rp.ok) throw new Error(await rp.text());
       }
-
-      // 3) DOCS
-      const df = new FormData();
-      df.set('phase','docs'); df.set('replyTo', String(replyTo));
-      df.set('annual_mode', annualMode); df.set('reg_mode', regMode);
-      if(annualMode==='yes' && annualFile) df.set('annual_doc', annualFile, annualFile.name);
-      if(regMode==='yes' && regFile) df.set('reg_doc', regFile, regFile.name);
-      const rd = await fetch('/api/submit', { method:'POST', body: df });
-      if(!rd.ok) throw new Error(await rd.text());
 
       setState({status:'done',message:t.done});
     }catch(err:any){
@@ -203,27 +180,6 @@ export default function Page(){
             <div className="field"><label dangerouslySetInnerHTML={{__html:t.pick}}/><input type="text" name="trailer_pick" /></div>
             <div className="field"><label dangerouslySetInnerHTML={{__html:t.droptr}}/><input type="text" name="trailer_drop" /></div>
             <div className="field field--full"><label>{t.notes}</label><textarea name="notes" /></div>
-
-            {/* Документы */}
-            <div className="field field--full">
-              <label>Документы / Documents</label>
-              <div className="doc-row">
-                <span>{t.ai}</span>
-                <div className="seg-wrap">
-                  <button type="button" className={`seg ${annualMode==='yes'?'active':''}`} onClick={()=>setAnnualMode('yes')}>{t.yes}</button>
-                  <button type="button" className={`seg ${annualMode==='none'?'active':''}`} onClick={()=>{setAnnualMode('none'); setAnnualFile(null);}}>{t.no}</button>
-                </div>
-              </div>
-              {annualMode==='yes' && (<div className="picker"><input type="file" accept="image/*,.pdf" onChange={e=>onDocsPick(e,'annual')} /></div>)}
-              <div className="doc-row">
-                <span>{t.reg}</span>
-                <div className="seg-wrap">
-                  <button type="button" className={`seg ${regMode==='yes'?'active':''}`} onClick={()=>setRegMode('yes')}>{t.yes}</button>
-                  <button type="button" className={`seg ${regMode==='none'?'active':''}`} onClick={()=>{setRegMode('none'); setRegFile(null);}}>{t.no}</button>
-                </div>
-              </div>
-              {regMode==='yes' && (<div className="picker"><input type="file" accept="image/*,.pdf" onChange={e=>onDocsPick(e,'reg')} /></div>)}
-            </div>
           </div>
 
           {/* Локация */}
@@ -252,7 +208,10 @@ export default function Page(){
 
         <div className="footer"><em>“It's our duty to lead people to the light”</em><br/>— D. Miller</div>
       </div>
-      <style jsx>{`.btn-done{background:#22c55e!important}.btn-geo{border-radius:12px;padding:12px 16px;background:#111;color:#fff;border:1px solid #333}.doc-row{display:flex;justify-content:space-between;align-items:center;margin:8px 0}.seg-wrap{display:flex;gap:6px}`}</style>
+      <style jsx>{`
+        .btn-done{background:#22c55e!important}
+        .btn-geo{border-radius:12px;padding:12px 16px;background:#111;color:#fff;border:1px solid #333}
+      `}</style>
     </div>
   );
 }
