@@ -32,7 +32,6 @@ function fmtLocal(dt: Date) {
   return `${d} ${TZ}`;
 }
 function toArrayBufferExact(buf: Buffer): ArrayBuffer {
-  // Гарантированно ArrayBuffer (не ArrayBufferLike)
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
@@ -136,19 +135,14 @@ async function sendMediaGroupAdaptive(photos: InputPhoto[]) {
     const [group] = chunkPhotos(rest, groupLimit, sizeLimit);
     const fd = new FormData();
 
-    // в форум-топик
     if (TG_TOPIC_ID) fd.append("message_thread_id", String(TG_TOPIC_ID));
     fd.append("chat_id", TG_CHAT_ID);
 
     const media = group.map((p, i) => {
       const attachName = `photo_${i}`;
-
-      // ✅ НЕ используем Uint8Array/Buffer как BlobPart напрямую — берём чистый ArrayBuffer
-      const ab = toArrayBufferExact(p.data);
+      const ab = toArrayBufferExact(p.data);           // чистый ArrayBuffer
       const blob = new Blob([ab], { type: p.type || "image/jpeg" });
-      // undici-совместимо: filename не передаём отдельно (append только с 2 аргументами)
-      fd.append(attachName, blob);
-
+      fd.append(attachName, blob);                     // 2 аргумента — undici-совместимо
       return { type: "photo" as const, media: `attach://${attachName}` };
     });
 
@@ -235,10 +229,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: false, error: `Нужно ${MIN_PHOTOS}–${MAX_PHOTOS} фото` }, { status: 400 });
       }
 
-      // 1) Альбом(ы) в топик
-      await sendMediaGroupAdaptive(photos);
-
-      // 2) Сообщение строго по шаблону (после фото → знаем точное кол-во)
+      // === ТЕКСТ — ПЕРВЫМ (строго по шаблону) ===
       const when = fmtLocal(new Date());
       const hook = meta.trailer_pick?.trim() || "No";
       const drop = meta.trailer_drop?.trim() || "No";
@@ -248,7 +239,7 @@ export async function POST(req: Request) {
       if (coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lng)) {
         const dLat = coords.lat.toFixed(5);
         const dLng = coords.lng.toFixed(5);
-        const link = `https://maps.google.com/?q=${coords.lat},${coords.lng}`; // полная точность в ссылке
+        const link = `https://maps.google.com/?q=${coords.lat},${coords.lng}`;
         locLine = `${dLat}, ${dLng} — ${link}`;
       }
 
@@ -264,6 +255,10 @@ export async function POST(req: Request) {
         `Фото: ${photos.length} шт.`;
 
       await sendTextToTopic(msg);
+
+      // === ФОТО — ПОСЛЕ ТЕКСТА ===
+      await sendMediaGroupAdaptive(photos);
+
       return NextResponse.json({ ok: true });
     }
 
@@ -320,8 +315,10 @@ export async function POST(req: Request) {
         const { data, type } = await recompressIfNeeded(rawBuf, mime);
         photos.push({ name: `p${i}.jpg`, type, data });
       }
-      await sendMediaGroupAdaptive(photos);
+
+      // Сначала текст с количеством, потом фото
       await sendTextToTopic(`Фото: ${photos.length} шт.`);
+      await sendMediaGroupAdaptive(photos);
       return NextResponse.json({ ok: true });
     }
 
