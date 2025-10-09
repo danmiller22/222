@@ -166,34 +166,98 @@ export default function Page() {
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
 
+  // ====== ЛОКАЦИЯ (фикс) ======
   async function getLocation() {
-    if (!navigator.geolocation) { setGeo(g=>({...g,status:'err'})); return; }
-    setGeo(g=>({...g,status:'getting'}));
-    navigator.geolocation.getCurrentPosition(
-      pos => {
-        const { latitude, longitude, accuracy } = pos.coords;
+    setGeo(g => ({ ...g, status: 'getting' }));
+
+    // Нет API
+    if (!('geolocation' in navigator)) {
+      setGeo(g => ({ ...g, status: 'err' }));
+      setState({ status: 'error', message: STR[lang].locErr });
+      return;
+    }
+
+    // Если явный deny — сразу подсказка
+    try {
+      const perm = (navigator.permissions as any)?.query
+        ? await (navigator.permissions as any).query({ name: 'geolocation' as PermissionName })
+        : null;
+      if (perm && perm.state === 'denied') {
+        setGeo(g => ({ ...g, status: 'err' }));
+        setState({ status: 'error', message: STR[lang].locHint });
+        return;
+      }
+    } catch { /* ignore */ }
+
+    const once = (opts: PositionOptions) =>
+      new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, opts);
+      });
+
+    const watchOnce = (opts: PositionOptions, timeoutMs = 12000) =>
+      new Promise<GeolocationPosition>((resolve, reject) => {
+        let done = false;
+        const id = navigator.geolocation.watchPosition(
+          pos => {
+            if (done) return;
+            done = true;
+            navigator.geolocation.clearWatch(id);
+            resolve(pos);
+          },
+          err => {
+            if (done) return;
+            done = true;
+            navigator.geolocation.clearWatch(id);
+            reject(err);
+          },
+          opts
+        );
+        setTimeout(() => {
+          if (done) return;
+          done = true;
+          navigator.geolocation.clearWatch(id);
+          reject(new Error('watchPosition timeout'));
+        }, timeoutMs);
+      });
+
+    try {
+      // Быстро берём первый успешный фикс
+      const pos = await Promise.race([
+        once({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }),
+        watchOnce({ enableHighAccuracy: true, maximumAge: 0 }, 12000),
+      ]);
+      const { latitude, longitude, accuracy } = pos.coords;
+      setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
+      setState(s => (s.status === 'error' ? { status: 'idle' } : s));
+    } catch {
+      // Вторая попытка — мягче
+      try {
+        const pos2 = await once({ enableHighAccuracy: false, timeout: 15000, maximumAge: 0 });
+        const { latitude, longitude, accuracy } = pos2.coords;
         setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
-      },
-      _err => setGeo(g=>({...g,status:'err'})),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+        setState(s => (s.status === 'error' ? { status: 'idle' } : s));
+      } catch {
+        setGeo(g => ({ ...g, status: 'err' }));
+        setState({ status: 'error', message: STR[lang].locHint });
+      }
+    }
   }
 
+  // ====== SUBMIT ======
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const t = STR[lang];
     const form = e.currentTarget;
     const fd = new FormData(form);
 
-    // 1) обязательные поля
+    // Обязательные поля
     const required = ['event_type','truck_number','driver_first','driver_last'];
     for (const k of required) {
       if (!fd.get(k)) { setState({status:'error', message:t.needField(k)}); return; }
     }
 
-    // 2) фото: ЖЁСТКО 8–20
+    // Фото: минимум 8, максимум 20
     if (files.length < 8) {
-      // явная ошибка (не меняю тексты интерфейса, только сообщение)
       setState({status:'error', message: lang==='ru'
         ? `Мало фото: ${files.length}. Нужно минимум 8.`
         : `Too few photos: ${files.length}. Minimum is 8.`});
@@ -206,9 +270,9 @@ export default function Page() {
       return;
     }
 
-    // 3) локация обязательна → явная ошибка
+    // Локация обязательна
     if (geo.status !== 'ok' || typeof geo.lat !== 'number' || typeof geo.lon !== 'number') {
-      setState({status:'error', message: lang==='ru' ? STR.ru.locHint : STR.en.locHint});
+      setState({status:'error', message: STR[lang].locHint});
       return;
     }
 
@@ -257,7 +321,7 @@ export default function Page() {
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const list = e.target.files ? Array.from(e.target.files) : [];
     setFiles(list);
-    // Показываем корректные ошибки по 8–20 (UI-тексты не трогаю)
+    // Сообщения — без изменения интерфейса
     if (list.length < 8) {
       setState({status:'error', message: STR[lang] === STR.ru
         ? `Мало фото: ${list.length}. Нужно минимум 8.`
@@ -272,7 +336,7 @@ export default function Page() {
   }
 
   const t = STR[lang];
-  // Кнопку НЕ блокирую из-за гео, чтобы при попытке сабмита показать ошибку — как просил
+  // Кнопку не блокируем из-за гео, чтобы при попытке сабмита вывести ошибку
   const submitBlocked = state.status==='sending' || state.status==='compressing';
 
   return (
@@ -332,7 +396,7 @@ export default function Page() {
               <textarea name="notes"></textarea>
             </div>
 
-            {/* Локация — обязательна, подсказка как была */}
+            {/* Локация — обязательна (кнопка и подсказки — как были) */}
             <div className="field field--full">
               <label>{t.locBtn}</label>
               <div style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
@@ -376,14 +440,14 @@ export default function Page() {
             aria-disabled={submitBlocked}
           >
             {state.status==='sending'
-              ? t.sending
+              ? STR[lang].sending
               : state.status==='done'
                 ? (lang==='ru' ? 'Отправлено' : 'Sent')
-                : t.send}
+                : STR[lang].send}
           </button>
         </form>
 
-        {state.status==='done' && <p className="success">{t.done}</p>}
+        {state.status==='done' && <p className="success">{STR[lang].done}</p>}
         {state.status==='error' && <p className="error">{state.message}</p>}
 
         <div className="footer">
@@ -391,7 +455,7 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Кнопка локации и подсказки — без изменения внешнего вида */}
+      {/* Кнопка локации и подсказки — внешний вид не менял */}
       <style jsx global>{`
         .loc-btn{
           -webkit-tap-highlight-color: transparent;
