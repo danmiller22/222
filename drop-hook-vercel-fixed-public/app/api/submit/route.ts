@@ -1,5 +1,10 @@
 // app/api/submit/route.ts
 import { NextResponse } from "next/server";
+import {
+  beginSubmission,
+  markSubmissionDelivered,
+  markSubmissionFailed,
+} from "../../lib/trailer-db";
 
 export const runtime = "nodejs";
 
@@ -7,16 +12,17 @@ export const runtime = "nodejs";
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || ""; // напр.: -1003162402009
 const TG_TOPIC_ID = Number(process.env.TELEGRAM_TOPIC_ID || process.env.TELEGRAM_TOPIC_ANCHOR || 0); // напр.: 5
+const LOCAL_PREVIEW_MODE = process.env.LOCAL_PREVIEW_MODE === "1";
 
 // ===== CFG / LIMITS =====
-const MIN_PHOTOS = 8;
+const MIN_PHOTOS = 10;
 const MAX_PHOTOS = 20;
 const TARGET_MAX_BYTES = 800_000;      // ~0.8 MB после recompress
 const TARGET_MAX_WIDTH = 1400;         // ширина ресайза
 const TG_ALBUM_LIMIT = 10;             // лимит альбома
 const MAX_CHUNK_TOTAL = 7_500_000;     // суммарный лимит байт на группу
-const GROUP_PAUSE_MS_MIN = 1000;
-const GROUP_PAUSE_MS_MAX = 1600;
+const GROUP_PAUSE_MS_MIN = 350;
+const GROUP_PAUSE_MS_MAX = 550;
 const MAX_TG_RETRIES = 8;
 const TZ = "America/Chicago";
 
@@ -254,12 +260,37 @@ export async function POST(req: Request) {
         `Заметки: ${esc(notes)}\n` +
         `Фото: ${photos.length} шт.`;
 
-      await sendTextToTopic(msg);
+      const submission = {
+        sessionId,
+        eventType: meta.event_type,
+        truckNumber: meta.truck_number,
+        driverFirst: meta.driver_first,
+        driverLast: meta.driver_last,
+        trailerPick: hook,
+        trailerDrop: drop,
+        notes,
+        lat: coords && Number.isFinite(coords.lat) ? coords.lat : null,
+        lng: coords && Number.isFinite(coords.lng) ? coords.lng : null,
+        photoCount: photos.length,
+      };
+      const started = await beginSubmission(submission);
+      if (started.alreadyDelivered) {
+        return NextResponse.json({ ok: true, duplicate: true });
+      }
 
-      // === ФОТО — ПОСЛЕ ТЕКСТА ===
-      await sendMediaGroupAdaptive(photos);
+      try {
+        if (!LOCAL_PREVIEW_MODE) {
+          await sendTextToTopic(msg);
 
-      return NextResponse.json({ ok: true });
+          // === ФОТО — ПОСЛЕ ТЕКСТА ===
+          await sendMediaGroupAdaptive(photos);
+        }
+        await markSubmissionDelivered(sessionId);
+        return NextResponse.json({ ok: true, preview: LOCAL_PREVIEW_MODE || undefined });
+      } catch (error) {
+        await markSubmissionFailed(sessionId, error).catch(console.error);
+        throw error;
+      }
     }
 
     // ---- JSON (init/photos base64) — опционально ----
