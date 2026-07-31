@@ -2,6 +2,10 @@
 
 import Image from 'next/image';
 import { useEffect, useRef, useState } from 'react';
+import {
+  compressionTargetBytes,
+  PHOTO_COMPRESSION_SETTINGS,
+} from './lib/photo-compression';
 
 type SubmitState = {
   status: 'idle'|'compressing'|'sending'|'done'|'error';
@@ -109,17 +113,17 @@ const FIELD_LABEL: Record<Lang, Record<string, string>> = {
   }
 };
 
-/** Усиленный компрессор (~300KB/фото), JPEG */
+/** Detail-preserving JPEG compression within the Vercel request budget. */
 async function compressImageAdaptive(
   file: File,
   {
-    startMaxDim = 1024,
-    minMaxDim = 640,
-    stepDim = 160,
-    startQ = 0.50,
-    minQ = 0.30,
-    stepQ = 0.05,
-    targetBytes = 180 * 1024,
+    startMaxDim = PHOTO_COMPRESSION_SETTINGS.startMaxDim,
+    minMaxDim = PHOTO_COMPRESSION_SETTINGS.minMaxDim,
+    stepDim = PHOTO_COMPRESSION_SETTINGS.stepDim,
+    startQ = PHOTO_COMPRESSION_SETTINGS.startQ,
+    minQ = PHOTO_COMPRESSION_SETTINGS.minQ,
+    stepQ = PHOTO_COMPRESSION_SETTINGS.stepQ,
+    targetBytes = 380 * 1024,
   }: Partial<{
     startMaxDim: number; minMaxDim: number; stepDim: number;
     startQ: number; minQ: number; stepQ: number; targetBytes: number;
@@ -178,15 +182,10 @@ function makeSessionId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function compressPhotoForUpload(file: File): Promise<File> {
+async function compressPhotoForUpload(file: File, targetBytes: number): Promise<File> {
   const options = {
-    startMaxDim: 1024,
-    minMaxDim: 640,
-    stepDim: 160,
-    startQ: 0.50,
-    minQ: 0.30,
-    stepQ: 0.05,
-    targetBytes: 180 * 1024,
+    ...PHOTO_COMPRESSION_SETTINGS,
+    targetBytes,
   };
 
   try {
@@ -199,7 +198,7 @@ async function compressPhotoForUpload(file: File): Promise<File> {
     const jpeg = await heicTo({
       blob: file,
       type: 'image/jpeg',
-      quality: 0.76,
+      quality: 0.86,
     });
     const converted = new File(
       [jpeg],
@@ -557,6 +556,7 @@ export default function Page() {
         message: t.sending,
       });
       const compressed = new Array<File>(files.length);
+      const targetBytesPerPhoto = compressionTargetBytes(files.length);
       const availableCores = navigator.hardwareConcurrency || 4;
       const workerCount = Math.min(files.length, Math.max(2, Math.min(6, Math.floor(availableCores / 2))));
       let nextIndex = 0;
@@ -568,7 +568,7 @@ export default function Page() {
           nextIndex += 1;
           if (index >= files.length) return;
           try {
-            compressed[index] = await compressPhotoForUpload(files[index]);
+            compressed[index] = await compressPhotoForUpload(files[index], targetBytesPerPhoto);
           } catch {
             compressionError = new Error(lang === 'ru'
               ? `Не удалось обработать фото ${index + 1}. Выберите его ещё раз.`

@@ -17,8 +17,9 @@ const LOCAL_PREVIEW_MODE = process.env.LOCAL_PREVIEW_MODE === "1";
 // ===== CFG / LIMITS =====
 const MIN_PHOTOS = 10;
 const MAX_PHOTOS = 20;
-const TARGET_MAX_BYTES = 800_000;      // ~0.8 MB после recompress
-const TARGET_MAX_WIDTH = 1400;         // ширина ресайза
+const TARGET_MAX_BYTES = 900_000;      // preserve defect detail for non-browser clients
+const TARGET_MAX_WIDTH = 1800;
+const NORMALIZED_JPEG_MAX_BYTES = 500_000;
 const TG_ALBUM_LIMIT = 10;             // лимит альбома
 const MAX_CHUNK_TOTAL = 7_500_000;     // суммарный лимит байт на группу
 const GROUP_PAUSE_MS_MIN = 350;
@@ -52,9 +53,14 @@ try {
 } catch { sharpAvailable = false; }
 
 async function recompressIfNeeded(buf: Buffer, mime: string): Promise<{ data: Buffer; type: string }> {
+  // Browser uploads are already resized and encoded once. Avoid a second lossy
+  // JPEG pass so scratches, dents, cracks, and inspection markings stay clear.
+  if (mime === "image/jpeg" && buf.length <= NORMALIZED_JPEG_MAX_BYTES) {
+    return { data: buf, type: mime };
+  }
   if (!sharpAvailable) return { data: buf, type: mime || "image/jpeg" };
   try {
-    let quality = 68;
+    let quality = 82;
     let out = await sharp(buf)
       .rotate()
       .resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
@@ -62,7 +68,7 @@ async function recompressIfNeeded(buf: Buffer, mime: string): Promise<{ data: Bu
       .toBuffer();
 
     for (let i = 0; i < 8 && out.length > TARGET_MAX_BYTES; i++) {
-      quality = Math.max(35, Math.floor(quality * 0.82));
+      quality = Math.max(55, Math.floor(quality * 0.88));
       out = await sharp(buf)
         .rotate()
         .resize({ width: TARGET_MAX_WIDTH, withoutEnlargement: true })
