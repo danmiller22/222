@@ -7,12 +7,21 @@
   --muted:#a1a1a6;
   --accent:#ff3b30;
   --radius:24px;
+  color-scheme:dark;
 }
 *{box-sizing:border-box}
 html,body{padding:0;margin:0;height:100%;background:radial-gradient(circle at 50% -20%,#24262b 0,#101114 35%,var(--bg) 70%);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+html.telegram-mini-app{
+  --bg:var(--tg-theme-bg-color,#08090b);
+  --panel:var(--tg-theme-secondary-bg-color,rgba(28,28,30,.96));
+  --ink:var(--tg-theme-text-color,#f5f5f7);
+  --muted:var(--tg-theme-hint-color,#a1a1a6);
+  --accent:var(--tg-theme-button-color,#ff3b30);
+}
+html.telegram-mini-app body{background:var(--bg);overscroll-behavior-y:none}
 a{color:inherit;text-decoration:none}
 
-.container{min-height:100vh;display:grid;place-items:center;padding:20px 14px}
+.container{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:calc(20px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))}
 .card{width:100%;max-width:540px;background:var(--panel);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);box-shadow:0 28px 80px rgba(0,0,0,.48),inset 0 1px 0 rgba(255,255,255,.05);padding:22px;backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px)}
 
 .logo{display:flex;align-items:center;gap:12px;margin-bottom:6px;justify-content:space-between}
@@ -40,7 +49,7 @@ textarea{min-height:88px;resize:vertical}
 .hint{margin-top:6px;color:var(--muted);font-size:12px}
 
 .btn-primary{
-  appearance:none;border:0;padding:16px 18px;border-radius:15px;font-weight:700;cursor:pointer;background:linear-gradient(180deg,#ff5148,#e72f26);color:#fff;margin-top:16px;box-shadow:0 8px 22px rgba(255,59,48,.27),inset 0 1px 0 rgba(255,255,255,.22);transition:transform .12s ease,filter .18s ease,box-shadow .18s ease
+  appearance:none;border:0;padding:16px 18px;border-radius:15px;font-weight:700;cursor:pointer;background:var(--tg-theme-button-color,linear-gradient(180deg,#ff5148,#e72f26));color:var(--tg-theme-button-text-color,#fff);margin-top:16px;box-shadow:0 8px 22px rgba(255,59,48,.27),inset 0 1px 0 rgba(255,255,255,.22);transition:transform .12s ease,filter .18s ease,box-shadow .18s ease
 }
 .btn-primary:hover{filter:brightness(1.06);box-shadow:0 10px 28px rgba(255,59,48,.33),inset 0 1px 0 rgba(255,255,255,.22)}
 .btn-primary:active{transform:scale(.985)}

@@ -247,14 +247,6 @@ export async function POST(req: Request) {
       const drop = meta.trailer_drop?.trim() || "No";
       const notes = meta.notes?.trim() || "-";
 
-      let locLine = "-";
-      if (coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lng)) {
-        const dLat = coords.lat.toFixed(5);
-        const dLng = coords.lng.toFixed(5);
-        const link = `https://maps.google.com/?q=${coords.lat},${coords.lng}`;
-        locLine = `${dLat}, ${dLng} — ${link}`;
-      }
-
       const msg =
         `🚚 US Team Fleet — ${meta.event_type}\n` +
         `Когда: ${when}\n` +
@@ -262,7 +254,6 @@ export async function POST(req: Request) {
         `Водитель: ${esc(meta.driver_first)}  ${esc(meta.driver_last)}\n` +
         `Взял (Hook): ${esc(hook)}\n` +
         `Оставил (Drop): ${esc(drop)}\n` +
-        `Локация: ${esc(locLine)}\n` +
         `Заметки: ${esc(notes)}\n` +
         `Фото: ${photos.length} шт.`;
 

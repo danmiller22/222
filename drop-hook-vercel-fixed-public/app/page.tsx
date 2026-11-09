@@ -51,11 +51,6 @@ const STR = {
       'Двери','Левая сторона снаружи','Правая сторона снаружи','Регистрация','Annual Inspection',
     ],
     none: 'нет',
-    locBtn: 'Локация',
-    locGetting: 'Получаем…',
-    locOK: 'Локация добавлена',
-    locErr: 'Локация недоступна',
-    locHint: 'Дайте разрешение на локацию',
   },
   en: {
     brand: 'US Team Fleet',
@@ -89,11 +84,6 @@ const STR = {
       'Doors','Left side (outside)','Right side (outside)','Annual Inspection','Registration',
     ],
     none: 'none',
-    locBtn: 'Location',
-    locGetting: 'Getting…',
-    locOK: 'Location attached',
-    locErr: 'Location unavailable',
-    locHint: 'Allow location access',
   }
 } as const;
 
@@ -398,7 +388,6 @@ export default function Page() {
   const [state, setState] = useState<SubmitState>({ status: 'idle' });
   const [files, setFiles] = useState<File[]>([]);
   const [formVersion, setFormVersion] = useState(0);
-  const [geo, setGeo] = useState<{lat?:number; lon?:number; acc?:number; status:'idle'|'getting'|'ok'|'err'}>({status:'idle'});
   const sessionIdRef = useRef<string>(makeSessionId()); // ← добавили
   const photoDraftReadyRef = useRef(false);
   const displayedProgressRef = useRef(0);
@@ -406,6 +395,16 @@ export default function Page() {
 
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
+  useEffect(() => {
+    const telegram = (window as any).Telegram?.WebApp;
+    if (!telegram) return;
+    telegram.ready();
+    telegram.expand();
+    telegram.setHeaderColor?.('secondary_bg_color');
+    telegram.setBackgroundColor?.('bg_color');
+    document.documentElement.classList.add('telegram-mini-app');
+    return () => document.documentElement.classList.remove('telegram-mini-app');
+  }, []);
   useEffect(() => {
     let active = true;
     readPhotoDraft()
@@ -457,61 +456,6 @@ export default function Page() {
     return () => cancelAnimationFrame(frame);
   }, [state.progress, state.status]);
 
-  // ====== ЛОКАЦИЯ (устойчивый запрос) ======
-  async function getLocation() {
-    setGeo(g => ({ ...g, status: 'getting' }));
-    if (!('geolocation' in navigator)) {
-      setGeo(g => ({ ...g, status: 'err' }));
-      setState({ status: 'error', message: STR[lang].locErr });
-      return;
-    }
-    try {
-      const perm = (navigator.permissions as any)?.query
-        ? await (navigator.permissions as any).query({ name: 'geolocation' as PermissionName })
-        : null;
-      if (perm && perm.state === 'denied') {
-        setGeo(g => ({ ...g, status: 'err' }));
-        setState({ status: 'error', message: STR[lang].locHint });
-        return;
-      }
-    } catch {}
-
-    const once = (opts: PositionOptions) =>
-      new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, opts);
-      });
-    const watchOnce = (opts: PositionOptions, timeoutMs = 12000) =>
-      new Promise<GeolocationPosition>((resolve, reject) => {
-        let done = false;
-        const id = navigator.geolocation.watchPosition(
-          pos => { if (done) return; done = true; navigator.geolocation.clearWatch(id); resolve(pos); },
-          err => { if (done) return; done = true; navigator.geolocation.clearWatch(id); reject(err); },
-          opts
-        );
-        setTimeout(() => { if (done) return; done = true; navigator.geolocation.clearWatch(id); reject(new Error('watchPosition timeout')); }, timeoutMs);
-      });
-
-    try {
-      const pos = await Promise.race([
-        once({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }),
-        watchOnce({ enableHighAccuracy: true, maximumAge: 0 }, 12000),
-      ]);
-      const { latitude, longitude, accuracy } = pos.coords;
-      setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
-      setState(s => (s.status === 'error' ? { status: 'idle' } : s));
-    } catch {
-      try {
-        const pos2 = await once({ enableHighAccuracy: false, timeout: 15000, maximumAge: 0 });
-        const { latitude, longitude, accuracy } = pos2.coords;
-        setGeo({ lat: latitude, lon: longitude, acc: accuracy ?? undefined, status: 'ok' });
-        setState(s => (s.status === 'error' ? { status: 'idle' } : s));
-      } catch {
-        setGeo(g => ({ ...g, status: 'err' }));
-        setState({ status: 'error', message: STR[lang].locHint });
-      }
-    }
-  }
-
   // ====== SUBMIT ======
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -540,12 +484,6 @@ export default function Page() {
       setState({status:'error', message: lang==='ru'
         ? `Слишком много фото: ${files.length}. Максимум 20.`
         : `Too many photos: ${files.length}. Max is 20.`});
-      return;
-    }
-
-    // Локация обязательна
-    if (geo.status !== 'ok' || typeof geo.lat !== 'number' || typeof geo.lon !== 'number') {
-      setState({status:'error', message: STR[lang].locHint});
       return;
     }
 
@@ -597,10 +535,6 @@ export default function Page() {
       payload.set('trailer_pick', String(fd.get('trailer_pick') || STR[lang].none));
       payload.set('trailer_drop', String(fd.get('trailer_drop') || STR[lang].none));
       payload.set('notes', String(fd.get('notes') || ''));
-      // локация
-      payload.set('lat', String(geo.lat));
-      payload.set('lng', String(geo.lon));
-      if (geo.acc) payload.set('geo_acc', String(Math.round(geo.acc)));
       // фото
       compressed.forEach((f, i) => payload.append('photos', f, f.name || `photo_${i+1}.jpg`));
 
@@ -731,27 +665,6 @@ export default function Page() {
               <textarea name="notes"></textarea>
             </div>
 
-            {/* Локация — обязательна (кнопка и подсказки — как были) */}
-            <div className="field field--full">
-              <label>{t.locBtn}</label>
-              <div style={{display:'flex', gap:10, alignItems:'center', flexWrap:'wrap'}}>
-                <button
-                  type="button"
-                  className={`loc-btn ${geo.status==='ok' ? 'ok' : ''}`}
-                  onClick={getLocation}
-                  disabled={geo.status==='getting'}
-                >
-                  {geo.status==='getting'
-                    ? t.locGetting
-                    : geo.status==='ok'
-                      ? t.locOK
-                      : t.locBtn}
-                </button>
-                {geo.status!=='ok' && (
-                  <span className="soft-hint">{t.locHint}</span>
-                )}
-              </div>
-            </div>
           </div>
 
           <div className="photos">
@@ -852,40 +765,6 @@ export default function Page() {
         </div>
       )}
 
-      <style jsx global>{`
-        .loc-btn{
-          -webkit-tap-highlight-color: transparent;
-          appearance: none;
-          border: 0;
-          outline: none;
-          padding: 10px 16px;
-          border-radius: 9999px;
-          background: linear-gradient(180deg, #ffffff, #f4f4f6);
-          box-shadow:
-            0 1px 0 rgba(0,0,0,0.06),
-            inset 0 0 0 0.5px rgba(0,0,0,0.08);
-          color: #111;
-          font-weight: 600;
-          font-size: 14px;
-          letter-spacing: .2px;
-          transition: transform .06s ease, box-shadow .2s ease, background .2s ease;
-        }
-        .loc-btn:hover{ box-shadow:
-            0 2px 6px rgba(0,0,0,0.08),
-            inset 0 0 0 0.5px rgba(0,0,0,0.10); }
-        .loc-btn:active{ transform: translateY(1px); }
-        .loc-btn.ok{
-          background: linear-gradient(180deg, #e9f9ef, #d9f3e5);
-          box-shadow:
-            0 1px 0 rgba(0,0,0,0.05),
-            inset 0 0 0 0.5px rgba(24,182,99,0.55);
-          color: #127a45;
-        }
-        .soft-hint{
-          color: #6b7280;
-          font-size: 13px;
-        }
-      `}</style>
     </div>
   );
 }
