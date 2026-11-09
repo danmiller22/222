@@ -396,14 +396,32 @@ export default function Page() {
   useEffect(()=>{ const s = localStorage.getItem('lang') as Lang|null; if (s) setLang(s); },[]);
   useEffect(()=>{ localStorage.setItem('lang', lang); },[lang]);
   useEffect(() => {
-    const telegram = (window as any).Telegram?.WebApp;
-    if (!telegram) return;
-    telegram.ready();
-    telegram.expand();
-    telegram.setHeaderColor?.('secondary_bg_color');
-    telegram.setBackgroundColor?.('bg_color');
-    document.documentElement.classList.add('telegram-mini-app');
-    return () => document.documentElement.classList.remove('telegram-mini-app');
+    let attempts = 0;
+    let timer: number | undefined;
+
+    const initializeTelegram = () => {
+      const telegram = (window as any).Telegram?.WebApp;
+      if (!telegram) {
+        attempts += 1;
+        if (attempts < 50) timer = window.setTimeout(initializeTelegram, 100);
+        return;
+      }
+
+      telegram.ready();
+      telegram.expand();
+      telegram.disableVerticalSwipes?.();
+      telegram.setHeaderColor?.('secondary_bg_color');
+      telegram.setBackgroundColor?.('bg_color');
+      document.documentElement.classList.add('telegram-mini-app');
+    };
+
+    initializeTelegram();
+    window.addEventListener('load', initializeTelegram);
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener('load', initializeTelegram);
+      document.documentElement.classList.remove('telegram-mini-app');
+    };
   }, []);
   useEffect(() => {
     let active = true;
